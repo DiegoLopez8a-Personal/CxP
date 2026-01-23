@@ -1,0 +1,1561 @@
+def HU8_GenerarReportesCxP():
+    """
+    Función para generar reportes y organizar archivos del proceso CxP.
+    
+    VERSIÓN: 1.0 - 12 Enero 2026
+    
+    FUNCIONALIDADES:
+        1. Crear árbol de carpetas en File Server
+        2. Identificar y verificar archivos XML/PDF
+        3. Mover archivos según estado del registro
+        4. Generar reportes:
+           - Reporte_de_ejecución_CXP (diario)
+           - Reporte_de_ejecución_GRANOS (mensual)
+           - Reporte_de_ejecución_MAÍZ (mensual)
+           - Reporte_de_ejecución_COMERCIALIZADOS (diario)
+           - Reporte_KPIs_CXP (mensual)
+           - Consolidado_FV_CXP_ConNovedad (mensual)
+           - Consolidado_CXP_NoExitososRechazados (mensual)
+           - Consolidado_CXP_Pendientes (mensual)
+           - Consolidado_Global_CXP (anual)
+           - Consolidado_NC_ND_CXP (mensual)
+        5. Notificar finalización por correo
+    
+    Returns:
+        None: Actualiza variables globales en RocketBot
+    """
+    
+    # =========================================================================
+    # IMPORTS
+    # =========================================================================
+    import json
+    import ast
+    import traceback
+    import pyodbc
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, timedelta
+    from contextlib import contextmanager
+    import time
+    import warnings
+    import re
+    import os
+    import shutil
+    from openpyxl import Workbook, load_workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.utils import get_column_letter
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    
+    warnings.filterwarnings('ignore')
+    
+    # =========================================================================
+    # CONSTANTES
+    # =========================================================================
+    
+    MESES_ESPANOL = {
+        1: '01. Enero', 2: '02. Febrero', 3: '03. Marzo', 4: '04. Abril',
+        5: '05. Mayo', 6: '06. Junio', 7: '07. Julio', 8: '08. Agosto',
+        9: '09. Septiembre', 10: '10. Octubre', 11: '11. Noviembre', 12: '12. Diciembre'
+    }
+    
+    CARPETAS_INSUMOS = [
+        'EN ESPERA',
+        'CON NOVEDAD NO CONTADO',
+        'CON NOVEDAD NO CONTADO/EXCLUIDOS CONTABILIZACION',
+        'CON NOVEDAD CONTADO',
+        'CON NOVEDAD CONTADO/EXCLUIDOS CONTABILIZACION',
+        'APROBADOS NO CONTADO',
+        'APROBADOS CONTADO',
+        'APROBADOS SIN CONTABILIZACION',
+        'APROBADO CONTADO Y O EVENTO MANUAL',
+        'NO EXITOSOS',
+        'PENDIENTES',
+        'RECLASIFICADOS',
+        'RECHAZADOS',
+        'ND EXITOSOS',
+        'NC ENCONTRADOS'
+    ]
+    
+    # =========================================================================
+    # FUNCIONES AUXILIARES BÁSICAS
+    # =========================================================================
+    
+    def safe_str(v):
+        """Convierte un valor a string de manera segura."""
+        if v is None:
+            return ""
+        if isinstance(v, str):
+            return v.strip()
+        if isinstance(v, bytes):
+            try:
+                return v.decode('latin-1', errors='replace').strip()
+            except:
+                return str(v).strip()
+        if isinstance(v, (int, float)):
+            if isinstance(v, float) and (np.isnan(v) or pd.isna(v)):
+                return ""
+            return str(v)
+        try:
+            return str(v).strip()
+        except:
+            return ""
+    
+    def parse_config(raw):
+        """Parsea la configuración desde RocketBot."""
+        if isinstance(raw, dict):
+            if not raw:
+                raise ValueError("Config vacia (dict)")
+            return raw
+        text = safe_str(raw)
+        if not text:
+            raise ValueError("vLocDicConfig vacio")
+        try:
+            config = json.loads(text)
+            if not config:
+                raise ValueError("Config vacia (JSON)")
+            return config
+        except json.JSONDecodeError:
+            pass
+        try:
+            config = ast.literal_eval(text)
+            if not config:
+                raise ValueError("Config vacia (literal)")
+            return config
+        except (ValueError, SyntaxError) as e:
+            raise ValueError(f"Config invalida: {str(e)}")
+    
+    def campo_vacio(valor):
+        """Verifica si un campo está vacío."""
+        valor_str = safe_str(valor)
+        return valor_str == "" or valor_str.lower() in ('null', 'none', 'nan')
+    
+    def campo_con_valor(valor):
+        """Verifica si un campo tiene valor."""
+        return not campo_vacio(valor)
+    
+    # =========================================================================
+    # CONEXIÓN A BASE DE DATOS
+    # =========================================================================
+    
+    @contextmanager
+    def crear_conexion_db(cfg, max_retries=3):
+        """Crea conexión a la base de datos con reintentos."""
+        required = ["ServidorBaseDatos", "NombreBaseDatos"]
+        missing = [k for k in required if not cfg.get(k)]
+        if missing:
+            raise ValueError(f"Parametros faltantes: {', '.join(missing)}")
+
+        usuario = GetVar("vGblStrUsuarioBaseDatos")
+        contrasena = GetVar("vGblStrClaveBaseDatos")
+        
+        conn_str = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={cfg['ServidorBaseDatos']};"
+            f"DATABASE={cfg['NombreBaseDatos']};"
+            f"UID={usuario};"
+            f"PWD={contrasena};"
+            "autocommit=False;"
+        )
+        
+        cx = None
+        for attempt in range(max_retries):
+            try:
+                cx = pyodbc.connect(conn_str, timeout=30)
+                cx.autocommit = False
+                print(f"[DEBUG] Conexion SQL abierta (intento {attempt + 1})")
+                break
+            except pyodbc.Error as e:
+                if attempt < max_retries - 1:
+                    print(f"[WARNING] Intento {attempt + 1} fallido, reintentando...")
+                    time.sleep(1 * (attempt + 1))
+                    continue
+                raise
+        
+        try:
+            yield cx
+            if cx:
+                cx.commit()
+                print("[DEBUG] Commit final exitoso")
+        except Exception as e:
+            if cx:
+                cx.rollback()
+                print(f"[ERROR] Rollback por error: {str(e)}")
+            raise
+        finally:
+            if cx:
+                try:
+                    cx.close()
+                    print("[DEBUG] Conexion cerrada")
+                except:
+                    pass
+    
+    # =========================================================================
+    # FUNCIONES DE GESTIÓN DE CARPETAS
+    # =========================================================================
+    
+    def verificar_acceso_ruta(ruta_base):
+        """Verifica si se tiene acceso a la ruta del File Server."""
+        try:
+            if os.path.exists(ruta_base):
+                # Intentar crear un archivo temporal para verificar permisos de escritura
+                test_file = os.path.join(ruta_base, '.test_access')
+                try:
+                    with open(test_file, 'w') as f:
+                        f.write('test')
+                    os.remove(test_file)
+                    return True
+                except:
+                    print(f"[WARNING] Acceso de solo lectura a {ruta_base}")
+                    return True  # Al menos tiene acceso de lectura
+            return False
+        except Exception as e:
+            print(f"[ERROR] Error verificando acceso: {str(e)}")
+            return False
+    
+    def crear_arbol_carpetas(ruta_base, fecha_ejecucion, numero_ejecucion):
+        """
+        Crea el árbol completo de carpetas según la estructura requerida.
+        
+        Estructura:
+            /AÑO/##. MES/CONSOLIDADOS
+            /AÑO/##. MES/INSUMO DE RETORNO
+            /AÑO/##. MES/DÍA/RESULTADOS BOT CXP
+            /AÑO/##. MES/DÍA/EJECUCION ## CXP/CXP/INSUMOS/[subcarpetas]
+            /AÑO/MATERIA PRIMA GRANOS/AÑO/##. MES/INSUMO|RESULTADO
+            /AÑO/MATERIA PRIMA MAÍZ/AÑO/##. MES/INSUMO|RESULTADO
+            /AÑO/COMERCIALIZADOS/AÑO/##. MES/DÍA/INSUMO|RESULTADO
+        """
+        try:
+            anio = fecha_ejecucion.year
+            mes = fecha_ejecucion.month
+            dia = fecha_ejecucion.day
+            
+            mes_nombre = MESES_ESPANOL.get(mes, f'{mes:02d}. Mes')
+            dia_str = f'{dia:02d}'
+            ejecucion_str = f'EJECUCION {numero_ejecucion:03d} CXP'
+            
+            # Estructura principal
+            rutas_crear = [
+                # Consolidados y retorno
+                os.path.join(ruta_base, str(anio), mes_nombre, 'CONSOLIDADOS'),
+                os.path.join(ruta_base, str(anio), mes_nombre, 'INSUMO DE RETORNO'),
+                
+                # Resultados del día
+                os.path.join(ruta_base, str(anio), mes_nombre, dia_str, 'RESULTADOS BOT CXP'),
+                
+                # Carpetas de insumos por estado
+            ]
+            
+            # Agregar carpetas de insumos
+            ruta_insumos = os.path.join(ruta_base, str(anio), mes_nombre, dia_str, ejecucion_str, 'CXP', 'INSUMOS')
+            for carpeta in CARPETAS_INSUMOS:
+                rutas_crear.append(os.path.join(ruta_insumos, carpeta))
+            
+            # Materia Prima Granos
+            rutas_crear.extend([
+                os.path.join(ruta_base, str(anio), 'MATERIA PRIMA GRANOS', str(anio), mes_nombre, 'INSUMO'),
+                os.path.join(ruta_base, str(anio), 'MATERIA PRIMA GRANOS', str(anio), mes_nombre, 'RESULTADO'),
+            ])
+            
+            # Materia Prima Maíz
+            rutas_crear.extend([
+                os.path.join(ruta_base, str(anio), 'MATERIA PRIMA MAIZ', str(anio), mes_nombre, 'INSUMO'),
+                os.path.join(ruta_base, str(anio), 'MATERIA PRIMA MAIZ', str(anio), mes_nombre, 'RESULTADO'),
+            ])
+            
+            # Comercializados
+            rutas_crear.extend([
+                os.path.join(ruta_base, str(anio), 'COMERCIALIZADOS', str(anio), mes_nombre, dia_str, 'INSUMO', 'CON NOVEDAD'),
+                os.path.join(ruta_base, str(anio), 'COMERCIALIZADOS', str(anio), mes_nombre, dia_str, 'INSUMO', 'EN ESPERA'),
+                os.path.join(ruta_base, str(anio), 'COMERCIALIZADOS', str(anio), mes_nombre, dia_str, 'RESULTADO'),
+            ])
+            
+            # Crear todas las carpetas
+            for ruta in rutas_crear:
+                os.makedirs(ruta, exist_ok=True)
+            
+            print(f"[INFO] Arbol de carpetas creado/verificado exitosamente")
+            
+            # Retornar rutas importantes
+            return {
+                'consolidados': os.path.join(ruta_base, str(anio), mes_nombre, 'CONSOLIDADOS'),
+                'insumo_retorno': os.path.join(ruta_base, str(anio), mes_nombre, 'INSUMO DE RETORNO'),
+                'resultados_dia': os.path.join(ruta_base, str(anio), mes_nombre, dia_str, 'RESULTADOS BOT CXP'),
+                'insumos_cxp': ruta_insumos,
+                'granos_resultado': os.path.join(ruta_base, str(anio), 'MATERIA PRIMA GRANOS', str(anio), mes_nombre, 'RESULTADO'),
+                'maiz_resultado': os.path.join(ruta_base, str(anio), 'MATERIA PRIMA MAIZ', str(anio), mes_nombre, 'RESULTADO'),
+                'comercializados_resultado': os.path.join(ruta_base, str(anio), 'COMERCIALIZADOS', str(anio), mes_nombre, dia_str, 'RESULTADO'),
+                'comercializados_insumo': os.path.join(ruta_base, str(anio), 'COMERCIALIZADOS', str(anio), mes_nombre, dia_str, 'INSUMO'),
+                'global_anual': os.path.join(ruta_base, str(anio)),
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Error creando arbol de carpetas: {str(e)}")
+            raise
+    
+    def determinar_carpeta_destino(resultado_final, tipo_documento):
+        """
+        Determina la carpeta de destino según el resultado final y tipo de documento.
+        
+        Args:
+            resultado_final: Estado del registro (ResultadoFinalAntesEventos)
+            tipo_documento: FV, NC o ND
+        
+        Returns:
+            str: Nombre de la carpeta destino
+        """
+        resultado = safe_str(resultado_final).upper()
+        tipo = safe_str(tipo_documento).upper()
+        
+        # ND siempre va a ND EXITOSOS si es exitoso
+        if tipo == 'ND':
+            if 'EXITOSO' in resultado:
+                return 'ND EXITOSOS'
+            elif 'NO EXITOSO' in resultado:
+                return 'NO EXITOSOS'
+            elif 'PENDIENTE' in resultado:
+                return 'PENDIENTES'
+            else:
+                return 'ND EXITOSOS'
+        
+        # NC
+        if tipo == 'NC':
+            if 'ENCONTRADO' in resultado:
+                return 'NC ENCONTRADOS'
+        
+        # FV y NC común
+        if 'NO EXITOSO' in resultado:
+            return 'NO EXITOSOS'
+        
+        if 'PENDIENTE' in resultado:
+            return 'PENDIENTES'
+        
+        if 'EN ESPERA' in resultado:
+            return 'EN ESPERA'
+        
+        if 'RECHAZADO' in resultado:
+            return 'RECHAZADOS'
+        
+        if 'RECLASIFICADO' in resultado:
+            return 'RECLASIFICADOS'
+        
+        # CON NOVEDAD
+        if 'CON NOVEDAD' in resultado:
+            if 'EXCLUIDOS CONTABILIZACION' in resultado or 'EXCLUIDO CONTABILIZACION' in resultado:
+                if 'CONTADO' in resultado:
+                    return 'CON NOVEDAD CONTADO/EXCLUIDOS CONTABILIZACION'
+                else:
+                    return 'CON NOVEDAD NO CONTADO/EXCLUIDOS CONTABILIZACION'
+            elif 'CONTADO' in resultado:
+                return 'CON NOVEDAD CONTADO'
+            else:
+                return 'CON NOVEDAD NO CONTADO'
+        
+        # APROBADO
+        if 'APROBADO' in resultado:
+            if 'CONTADO Y/O EVENTO MANUAL' in resultado or 'CONTADO Y O EVENTO MANUAL' in resultado:
+                return 'APROBADO CONTADO Y O EVENTO MANUAL'
+            elif 'SIN CONTABILIZACION' in resultado:
+                return 'APROBADOS SIN CONTABILIZACION'
+            elif 'CONTADO' in resultado:
+                return 'APROBADOS CONTADO'
+            else:
+                return 'APROBADOS NO CONTADO'
+        
+        # Por defecto
+        return 'PENDIENTES'
+    
+    # =========================================================================
+    # FUNCIONES DE MANEJO DE ARCHIVOS
+    # =========================================================================
+    
+    def verificar_archivos_insumo(ruta_respaldo, nombre_archivos):
+        """
+        Verifica la existencia de archivos XML y PDF.
+        
+        Returns:
+            tuple: (xml_encontrado, pdf_encontrado, ruta_xml, ruta_pdf)
+        """
+        xml_encontrado = False
+        pdf_encontrado = False
+        ruta_xml = None
+        ruta_pdf = None
+        
+        try:
+            if campo_vacio(ruta_respaldo) or campo_vacio(nombre_archivos):
+                return xml_encontrado, pdf_encontrado, ruta_xml, ruta_pdf
+            
+            # Extraer nombres base
+            nombre_base = safe_str(nombre_archivos)
+            
+            # Buscar XML
+            posibles_xml = [
+                os.path.join(ruta_respaldo, f"{nombre_base}.xml"),
+                os.path.join(ruta_respaldo, nombre_base) if nombre_base.endswith('.xml') else None
+            ]
+            
+            for ruta in posibles_xml:
+                if ruta and os.path.exists(ruta):
+                    xml_encontrado = True
+                    ruta_xml = ruta
+                    break
+            
+            # Buscar PDF
+            posibles_pdf = [
+                os.path.join(ruta_respaldo, f"{nombre_base}.pdf"),
+                os.path.join(ruta_respaldo, nombre_base.replace('.xml', '.pdf')) if '.xml' in nombre_base else None
+            ]
+            
+            for ruta in posibles_pdf:
+                if ruta and os.path.exists(ruta):
+                    pdf_encontrado = True
+                    ruta_pdf = ruta
+                    break
+            
+        except Exception as e:
+            print(f"[ERROR] Error verificando archivos: {str(e)}")
+        
+        return xml_encontrado, pdf_encontrado, ruta_xml, ruta_pdf
+    
+    def mover_archivos_a_destino(ruta_xml, ruta_pdf, carpeta_destino, numero_oc=None, ruta_comercializados=None):
+        """
+        Mueve los archivos XML y PDF a la carpeta de destino.
+        También copia a comercializados si OC inicia con 50.
+        
+        Returns:
+            str: Nueva ruta de respaldo
+        """
+        nueva_ruta = None
+        
+        try:
+            os.makedirs(carpeta_destino, exist_ok=True)
+            
+            archivos_movidos = []
+            
+            if ruta_xml and os.path.exists(ruta_xml):
+                nombre_xml = os.path.basename(ruta_xml)
+                destino_xml = os.path.join(carpeta_destino, nombre_xml)
+                shutil.copy2(ruta_xml, destino_xml)
+                archivos_movidos.append(destino_xml)
+                
+                # Copiar a comercializados si aplica
+                if numero_oc and safe_str(numero_oc).startswith('50') and ruta_comercializados:
+                    os.makedirs(ruta_comercializados, exist_ok=True)
+                    shutil.copy2(ruta_xml, os.path.join(ruta_comercializados, nombre_xml))
+            
+            if ruta_pdf and os.path.exists(ruta_pdf):
+                nombre_pdf = os.path.basename(ruta_pdf)
+                destino_pdf = os.path.join(carpeta_destino, nombre_pdf)
+                shutil.copy2(ruta_pdf, destino_pdf)
+                archivos_movidos.append(destino_pdf)
+                
+                # Copiar a comercializados si aplica
+                if numero_oc and safe_str(numero_oc).startswith('50') and ruta_comercializados:
+                    shutil.copy2(ruta_pdf, os.path.join(ruta_comercializados, nombre_pdf))
+            
+            if archivos_movidos:
+                nueva_ruta = carpeta_destino
+            
+        except Exception as e:
+            print(f"[ERROR] Error moviendo archivos: {str(e)}")
+        
+        return nueva_ruta
+    
+    # =========================================================================
+    # FUNCIONES DE FORMATO EXCEL
+    # =========================================================================
+    
+    def aplicar_formato_encabezado(ws, num_columnas):
+        """Aplica formato de encabezado a la primera fila."""
+        header_font = Font(bold=True, color='FFFFFF')
+        header_fill = PatternFill(start_color='4472C4', end_color='4472C4', fill_type='solid')
+        header_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+        
+        for col in range(1, num_columnas + 1):
+            cell = ws.cell(row=1, column=col)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+    
+    def ajustar_ancho_columnas(ws):
+        """Ajusta automáticamente el ancho de las columnas al contenido."""
+        for column_cells in ws.columns:
+            max_length = 0
+            column = column_cells[0].column_letter
+            
+            for cell in column_cells:
+                try:
+                    if cell.value:
+                        cell_length = len(str(cell.value))
+                        if cell_length > max_length:
+                            max_length = cell_length
+                except:
+                    pass
+            
+            adjusted_width = min(max_length + 2, 50)  # Máximo 50 caracteres
+            ws.column_dimensions[column].width = adjusted_width
+    
+    def crear_excel_desde_df(df, ruta_archivo, nombre_hoja='Datos'):
+        """Crea un archivo Excel formateado desde un DataFrame."""
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = nombre_hoja
+            
+            # Escribir encabezados
+            for col_idx, column in enumerate(df.columns, 1):
+                ws.cell(row=1, column=col_idx, value=column)
+            
+            # Escribir datos
+            for row_idx, row in enumerate(df.itertuples(index=False), 2):
+                for col_idx, value in enumerate(row, 1):
+                    if pd.isna(value):
+                        ws.cell(row=row_idx, column=col_idx, value='')
+                    else:
+                        ws.cell(row=row_idx, column=col_idx, value=value)
+            
+            # Aplicar formato
+            aplicar_formato_encabezado(ws, len(df.columns))
+            ajustar_ancho_columnas(ws)
+            
+            wb.save(ruta_archivo)
+            print(f"[INFO] Archivo creado: {ruta_archivo}")
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Error creando Excel: {str(e)}")
+            return False
+    
+    def crear_excel_multihoja(hojas_data, ruta_archivo):
+        """
+        Crea un archivo Excel con múltiples hojas.
+        
+        Args:
+            hojas_data: dict {nombre_hoja: DataFrame}
+            ruta_archivo: Ruta del archivo a crear
+        """
+        try:
+            wb = Workbook()
+            
+            # Eliminar hoja por defecto
+            if 'Sheet' in wb.sheetnames:
+                del wb['Sheet']
+            
+            for nombre_hoja, df in hojas_data.items():
+                ws = wb.create_sheet(title=nombre_hoja[:31])  # Excel limita a 31 caracteres
+                
+                # Escribir encabezados
+                for col_idx, column in enumerate(df.columns, 1):
+                    ws.cell(row=1, column=col_idx, value=column)
+                
+                # Escribir datos
+                for row_idx, row in enumerate(df.itertuples(index=False), 2):
+                    for col_idx, value in enumerate(row, 1):
+                        if pd.isna(value):
+                            ws.cell(row=row_idx, column=col_idx, value='')
+                        else:
+                            ws.cell(row=row_idx, column=col_idx, value=value)
+                
+                # Aplicar formato
+                aplicar_formato_encabezado(ws, len(df.columns))
+                ajustar_ancho_columnas(ws)
+            
+            wb.save(ruta_archivo)
+            print(f"[INFO] Archivo multihoja creado: {ruta_archivo}")
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Error creando Excel multihoja: {str(e)}")
+            return False
+    
+    # =========================================================================
+    # FUNCIONES DE GENERACIÓN DE REPORTES
+    # =========================================================================
+    
+    def generar_reporte_ejecucion_cxp(cx, rutas, fecha_ejecucion):
+        """
+        Genera Reporte_de_ejecución_CXP_ddmmaaaa_HHmm.xlsx
+        
+        - Incluye todos los registros y estados
+        - 3 hojas: Facturas, NC, ND
+        - Frecuencia: Diaria
+        """
+        try:
+            timestamp = fecha_ejecucion.strftime('%d%m%Y_%H%M')
+            nombre_archivo = f"Reporte_de_ejecucion_CXP_{timestamp}.xlsx"
+            ruta_archivo = os.path.join(rutas['resultados_dia'], nombre_archivo)
+            
+            # Query para Facturas (FV)
+            query_fv = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[ClaseDePedido_hoc] AS ClasePedido,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS ObservacionesFase4,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal,
+                    dp.[InsumoXML] AS InsumoXML,
+                    dp.[InsumoPDF] AS InsumoPDF,
+                    dp.[rutaRespaldo] AS RutaRespaldo
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'FV'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # Query para NC
+            query_nc = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[fecha_de_retoma] AS FechaRetoma,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_nota_credito] AS NotaCredito,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar_nc] AS ValorAPagar,
+                    dp.[tipo_de_nota_credito] AS TipoNotaCredito,
+                    dp.[prefijo_y_numero] AS Referencia,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS ObservacionesFase4,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal,
+                    dp.[InsumoXML] AS InsumoXML,
+                    dp.[InsumoPDF] AS InsumoPDF
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'NC'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # Query para ND
+            query_nd = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_nota_debito] AS NotaDebito,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[tipo_de_nota_debito] AS TipoNotaDebito,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS ObservacionesFase4,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal,
+                    dp.[InsumoXML] AS InsumoXML,
+                    dp.[InsumoPDF] AS InsumoPDF
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'ND'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df_fv = pd.read_sql(query_fv, cx)
+            df_nc = pd.read_sql(query_nc, cx)
+            df_nd = pd.read_sql(query_nd, cx)
+            
+            hojas = {
+                'Facturas': df_fv,
+                'NC': df_nc,
+                'ND': df_nd
+            }
+            
+            crear_excel_multihoja(hojas, ruta_archivo)
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando reporte CXP: {str(e)}")
+            return None
+    
+    def generar_reporte_granos(cx, rutas, fecha_ejecucion):
+        """
+        Genera Reporte_de_ejecución_GRANOS_ddmmaaaa_HHmm.xlsx
+        
+        - Solo registros con Agrupación = MAPG
+        - 1 hoja: Facturas
+        - Frecuencia: Mensual
+        """
+        try:
+            timestamp = fecha_ejecucion.strftime('%d%m%Y_%H%M')
+            nombre_archivo = f"Reporte_de_ejecucion_GRANOS_{timestamp}.xlsx"
+            ruta_archivo = os.path.join(rutas['granos_resultado'], nombre_archivo)
+            
+            query = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[Agrupacion] AS Agrupacion,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS ObservacionesFase4,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'FV'
+                  AND dp.[Agrupacion] = 'MAPG'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df = pd.read_sql(query, cx)
+            crear_excel_desde_df(df, ruta_archivo, 'Facturas')
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando reporte GRANOS: {str(e)}")
+            return None
+    
+    def generar_reporte_maiz(cx, rutas, fecha_ejecucion):
+        """
+        Genera Reporte_de_ejecución_MAÍZ_ddmmaaaa_HHmm.xlsx
+        
+        - Solo registros con Agrupación = MAPM
+        - 1 hoja: Facturas
+        - Frecuencia: Mensual
+        """
+        try:
+            timestamp = fecha_ejecucion.strftime('%d%m%Y_%H%M')
+            nombre_archivo = f"Reporte_de_ejecucion_MAIZ_{timestamp}.xlsx"
+            ruta_archivo = os.path.join(rutas['maiz_resultado'], nombre_archivo)
+            
+            query = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[Agrupacion] AS Agrupacion,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS ObservacionesFase4,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'FV'
+                  AND dp.[Agrupacion] = 'MAPM'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df = pd.read_sql(query, cx)
+            crear_excel_desde_df(df, ruta_archivo, 'Facturas')
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando reporte MAIZ: {str(e)}")
+            return None
+    
+    def generar_reporte_comercializados(cx, rutas, fecha_ejecucion):
+        """
+        Genera Reporte_de_ejecución_COMERCIALIZADOS_ddmmaaaa_HHmm.xlsx
+        
+        - Solo registros con clase de pedido ZVEN (OC 50)
+        - 1 hoja: Facturas
+        - Frecuencia: Diaria
+        """
+        try:
+            timestamp = fecha_ejecucion.strftime('%d%m%Y_%H%M')
+            nombre_archivo = f"Reporte_de_ejecucion_COMERCIALIZADOS_{timestamp}.xlsx"
+            ruta_archivo = os.path.join(rutas['comercializados_resultado'], nombre_archivo)
+            
+            query = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[ClaseDePedido_hoc] AS ClasePedido,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS ObservacionesFase4,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'FV'
+                  AND (dp.[ClaseDePedido_hoc] = 'ZVEN' 
+                       OR dp.[numero_de_liquidacion_u_orden_de_compra] LIKE '50%')
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df = pd.read_sql(query, cx)
+            crear_excel_desde_df(df, ruta_archivo, 'Facturas')
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando reporte COMERCIALIZADOS: {str(e)}")
+            return None
+    
+    def generar_reporte_kpis(cx, rutas, fecha_ejecucion):
+        """
+        Genera Reporte_KPIs_CXP_MMAAAA.xlsx
+        
+        - Conteo de cada fase
+        - Frecuencia: Mensual
+        """
+        try:
+            mes_anio = fecha_ejecucion.strftime('%m%Y')
+            nombre_archivo = f"Reporte_KPIs_CXP_{mes_anio}.xlsx"
+            ruta_archivo = os.path.join(rutas['consolidados'], nombre_archivo)
+            
+            # Obtener primer y último día del mes
+            primer_dia = fecha_ejecucion.replace(day=1)
+            if fecha_ejecucion.month == 12:
+                ultimo_dia = fecha_ejecucion.replace(year=fecha_ejecucion.year + 1, month=1, day=1) - timedelta(days=1)
+            else:
+                ultimo_dia = fecha_ejecucion.replace(month=fecha_ejecucion.month + 1, day=1) - timedelta(days=1)
+            
+            # Query para KPIs
+            query = f"""
+                SELECT 
+                    'Total Documentos Recibidos' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'FV Procesadas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'FV'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'NC Procesadas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'NC'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'ND Procesadas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'ND'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'FV Aprobadas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'FV'
+                  AND [ResultadoFinalAntesEventos] LIKE '%APROBADO%'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'FV Con Novedad' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'FV'
+                  AND [ResultadoFinalAntesEventos] LIKE '%CON NOVEDAD%'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'FV Rechazadas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'FV'
+                  AND [ResultadoFinalAntesEventos] LIKE '%RECHAZADO%'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'NC Encontradas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'NC'
+                  AND [ResultadoFinalAntesEventos] = 'Encontrado'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'NC Con Novedad' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'NC'
+                  AND [ResultadoFinalAntesEventos] LIKE '%novedad%'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+                
+                UNION ALL
+                
+                SELECT 
+                    'ND Exitosas' AS KPI,
+                    COUNT(*) AS Cantidad
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [tipo_de_documento] = 'ND'
+                  AND [ResultadoFinalAntesEventos] = 'Exitoso'
+                  AND [executionDate] BETWEEN '{primer_dia}' AND '{ultimo_dia}'
+            """
+            
+            df = pd.read_sql(query, cx)
+            crear_excel_desde_df(df, ruta_archivo, 'KPIs')
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando reporte KPIs: {str(e)}")
+            return None
+    
+    def generar_consolidado_con_novedad(cx, rutas, fecha_ejecucion):
+        """
+        Genera Consolidado_FV_CXP_ConNovedad_MMAAAA.xlsx
+        
+        - Solo resultados CON NOVEDAD
+        - 2 hojas: Todas las novedades del mes, Novedades vigentes
+        - Frecuencia: Mensual
+        """
+        try:
+            mes_anio = fecha_ejecucion.strftime('%m%Y')
+            nombre_archivo = f"Consolidado_FV_CXP_ConNovedad_{mes_anio}.xlsx"
+            ruta_archivo = os.path.join(rutas['consolidados'], nombre_archivo)
+            
+            primer_dia = fecha_ejecucion.replace(day=1)
+            
+            # Query todas las novedades del mes
+            query_todas = f"""
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[ObservacionesFase_4] AS Observaciones,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'FV'
+                  AND dp.[ResultadoFinalAntesEventos] LIKE '%CON NOVEDAD%'
+                  AND dp.[executionDate] >= '{primer_dia}'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # Query novedades vigentes (aún en estado CON NOVEDAD)
+            query_vigentes = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[ObservacionesFase_4] AS Observaciones,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'FV'
+                  AND dp.[ResultadoFinalAntesEventos] LIKE '%CON NOVEDAD%'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df_todas = pd.read_sql(query_todas, cx)
+            df_vigentes = pd.read_sql(query_vigentes, cx)
+            
+            hojas = {
+                'Novedades Mes': df_todas,
+                'Novedades Vigentes': df_vigentes
+            }
+            
+            crear_excel_multihoja(hojas, ruta_archivo)
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando consolidado con novedad: {str(e)}")
+            return None
+    
+    def generar_consolidado_no_exitosos_rechazados(cx, rutas, fecha_ejecucion):
+        """
+        Genera Consolidado_CXP_NoExitososRechazados_MMAAAA.xlsx
+        
+        - 2 hojas: Rechazados con evento, No Exitosos vigentes
+        - Frecuencia: Mensual
+        """
+        try:
+            mes_anio = fecha_ejecucion.strftime('%m%Y')
+            nombre_archivo = f"Consolidado_CXP_NoExitososRechazados_{mes_anio}.xlsx"
+            ruta_archivo = os.path.join(rutas['consolidados'], nombre_archivo)
+            
+            primer_dia = fecha_ejecucion.replace(day=1)
+            
+            # Query rechazados
+            query_rechazados = f"""
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[ObservacionesFase_4] AS Observaciones,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] IN ('FV', 'NC')
+                  AND dp.[ResultadoFinalAntesEventos] LIKE '%RECHAZADO%'
+                  AND dp.[executionDate] >= '{primer_dia}'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # Query no exitosos vigentes
+            query_no_exitosos = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[ObservacionesFase_4] AS Observaciones,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[ResultadoFinalAntesEventos] LIKE '%NO EXITOSO%'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df_rechazados = pd.read_sql(query_rechazados, cx)
+            df_no_exitosos = pd.read_sql(query_no_exitosos, cx)
+            
+            hojas = {
+                'Rechazados': df_rechazados,
+                'No Exitosos Vigentes': df_no_exitosos
+            }
+            
+            crear_excel_multihoja(hojas, ruta_archivo)
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando consolidado no exitosos: {str(e)}")
+            return None
+    
+    def generar_consolidado_pendientes(cx, rutas, fecha_ejecucion):
+        """
+        Genera Consolidado_CXP_Pendientes_MMAAAA.xlsx
+        
+        - 3 hojas: Pendiente Eventos, Pendiente Contab, Pendiente Compen
+        - Frecuencia: Mensual
+        """
+        try:
+            mes_anio = fecha_ejecucion.strftime('%m%Y')
+            nombre_archivo = f"Consolidado_CXP_Pendientes_{mes_anio}.xlsx"
+            ruta_archivo = os.path.join(rutas['consolidados'], nombre_archivo)
+            
+            # Query pendientes eventos
+            query_eventos = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[ResultadoFinalAntesEventos] LIKE '%PENDIENTE%'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # Query pendientes contabilización
+            query_contab = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[ResultadoCompensacionSAP] AS ResultadoCompensacion
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[ResultadoCompensacionSAP] = 'CONTABILIZACION PENDIENTE'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # Query pendientes compensación
+            query_compen = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[ResultadoCompensacionSAP] AS ResultadoCompensacion
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[ResultadoCompensacionSAP] = 'COMPENSACION PENDIENTE'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df_eventos = pd.read_sql(query_eventos, cx)
+            df_contab = pd.read_sql(query_contab, cx)
+            df_compen = pd.read_sql(query_compen, cx)
+            
+            hojas = {
+                'Pendiente Eventos Vigentes': df_eventos,
+                'Pendiente Contab Vigentes': df_contab,
+                'Pendiente Compen Vigentes': df_compen
+            }
+            
+            crear_excel_multihoja(hojas, ruta_archivo)
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando consolidado pendientes: {str(e)}")
+            return None
+    
+    def generar_consolidado_global_anual(cx, rutas, fecha_ejecucion):
+        """
+        Genera Consolidado_Global_CXP_AAAA.xlsx
+        
+        - Todos los estados y tipos de documento
+        - Frecuencia: Anual
+        """
+        try:
+            anio = fecha_ejecucion.year
+            nombre_archivo = f"Consolidado_Global_CXP_{anio}.xlsx"
+            ruta_archivo = os.path.join(rutas['global_anual'], nombre_archivo)
+            
+            query = """
+                SELECT 
+                    dp.[ID],
+                    dp.[tipo_de_documento] AS TipoDocumento,
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_factura] AS NumeroFactura,
+                    dp.[numero_de_nota_credito] AS NotaCredito,
+                    dp.[numero_de_nota_debito] AS NotaDebito,
+                    dp.[fecha_de_emision_documento] AS FechaEmision,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[numero_de_liquidacion_u_orden_de_compra] AS OrdenCompra,
+                    dp.[EstadoFinalFase_4] AS EstadoFase4,
+                    dp.[ObservacionesFase_4] AS Observaciones,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df = pd.read_sql(query, cx)
+            crear_excel_desde_df(df, ruta_archivo, 'Global')
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando consolidado global: {str(e)}")
+            return None
+    
+    def generar_consolidado_nc_nd(cx, rutas, fecha_ejecucion):
+        """
+        Genera Consolidado_NC_ND_CXP_MMAAAA.xlsx
+        
+        - 3 hojas: NC Encontrados-NoExitosos, NC Con Novedad Vigentes, ND Total Mes
+        - Frecuencia: Mensual
+        """
+        try:
+            mes_anio = fecha_ejecucion.strftime('%m%Y')
+            nombre_archivo = f"Consolidado_NC_ND_CXP_{mes_anio}.xlsx"
+            ruta_archivo = os.path.join(rutas['consolidados'], nombre_archivo)
+            
+            primer_dia = fecha_ejecucion.replace(day=1)
+            
+            # NC Encontrados y No Exitosos del mes
+            query_nc_encontrados = f"""
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[fecha_de_retoma] AS FechaRetoma,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_nota_credito] AS NotaCredito,
+                    dp.[valor_a_pagar_nc] AS ValorAPagar,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'NC'
+                  AND dp.[ResultadoFinalAntesEventos] IN ('Encontrado', 'No exitoso')
+                  AND dp.[executionDate] >= '{primer_dia}'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # NC Con Novedad Vigentes
+            query_nc_novedad = """
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[fecha_de_retoma] AS FechaRetoma,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_nota_credito] AS NotaCredito,
+                    dp.[valor_a_pagar_nc] AS ValorAPagar,
+                    dp.[ObservacionesFase_4] AS Observaciones,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'NC'
+                  AND dp.[ResultadoFinalAntesEventos] LIKE '%novedad%'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            # ND Total Mes
+            query_nd = f"""
+                SELECT 
+                    dp.[ID],
+                    dp.[executionDate] AS FechaEjecucion,
+                    dp.[nit_emisor_o_nit_del_proveedor] AS NIT,
+                    dp.[nombre_emisor] AS NombreEmisor,
+                    dp.[numero_de_nota_debito] AS NotaDebito,
+                    dp.[valor_a_pagar] AS ValorAPagar,
+                    dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
+                FROM [CxP].[DocumentsProcessing] dp
+                WHERE dp.[tipo_de_documento] = 'ND'
+                  AND dp.[executionDate] >= '{primer_dia}'
+                ORDER BY dp.[executionDate] DESC
+            """
+            
+            df_nc_encontrados = pd.read_sql(query_nc_encontrados, cx)
+            df_nc_novedad = pd.read_sql(query_nc_novedad, cx)
+            df_nd = pd.read_sql(query_nd, cx)
+            
+            hojas = {
+                'NC Encontrados-NoExitosos': df_nc_encontrados,
+                'NC Con Novedad Vigentes': df_nc_novedad,
+                'ND Total Mes': df_nd
+            }
+            
+            crear_excel_multihoja(hojas, ruta_archivo)
+            
+            return ruta_archivo
+            
+        except Exception as e:
+            print(f"[ERROR] Error generando consolidado NC/ND: {str(e)}")
+            return None
+    
+    # =========================================================================
+    # FUNCIÓN DE NOTIFICACIÓN
+    # =========================================================================
+    
+    def enviar_notificacion_finalizacion(cfg, rutas_reportes, exito=True):
+        """Envía notificación por correo al finalizar el proceso."""
+        try:
+            # Obtener configuración de correo
+            smtp_server = cfg.get('SMTPServer', '')
+            smtp_port = int(cfg.get('SMTPPort', 587))
+            smtp_user = cfg.get('SMTPUser', '')
+            smtp_password = cfg.get('SMTPPassword', '')
+            destinatarios = cfg.get('DestinatariosNotificacion', '').split(';')
+            
+            if not smtp_server or not destinatarios:
+                print("[WARNING] Configuracion de correo incompleta, omitiendo notificacion")
+                return False
+            
+            # Crear mensaje
+            msg = MIMEMultipart()
+            
+            if exito:
+                msg['Subject'] = 'Finalizacion ejecucion proceso Validacion de facturas Cuentas por pagar'
+                
+                cuerpo = """Cordial saludo;
+
+Estimado usuario, te informo que, el proceso ha finalizado correctamente.
+
+Los reportes del proceso se encuentran en las siguientes rutas:
+"""
+                for nombre, ruta in rutas_reportes.items():
+                    if ruta:
+                        cuerpo += f"\n- {nombre}: {ruta}"
+                
+                cuerpo += """
+
+Cordialmente;
+BOT_Validación_FV_NC_ND_CXP_Validación de facturas Cuentas por Pagar
+"""
+            else:
+                msg['Subject'] = 'Error - BOT_Validación_FV_NC_ND_CXP - Fase 8 GENERACIÓN DE REPORTES'
+                cuerpo = """Cordial saludo;
+
+Estimado usuario, ha ocurrido un error durante la generación de reportes.
+
+Por favor revisar los logs del proceso.
+
+Cordialmente;
+BOT_Validación_FV_NC_ND_CXP_Validación de facturas Cuentas por Pagar
+"""
+            
+            msg['From'] = smtp_user
+            msg['To'] = ';'.join(destinatarios)
+            msg.attach(MIMEText(cuerpo, 'plain'))
+            
+            # Enviar
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+            
+            print("[INFO] Notificacion enviada exitosamente")
+            return True
+            
+        except Exception as e:
+            print(f"[ERROR] Error enviando notificacion: {str(e)}")
+            return False
+    
+    # =========================================================================
+    # PROCESAMIENTO PRINCIPAL
+    # =========================================================================
+    
+    try:
+        print("")
+        print("=" * 80)
+        print("[INICIO] HU8 - Generación de Reportes CxP")
+        print("=" * 80)
+        
+        t_inicio = time.time()
+        
+        # 1. Obtener y validar configuración
+        cfg = parse_config(GetVar("vLocDicConfig"))
+        print("[INFO] Configuracion cargada exitosamente")
+        
+        # Parámetros de configuración
+        ruta_base = cfg.get('RutaFileServer', r'\\172.16.250.222\BOT_Validacion_FV_NC_ND_CXP')
+        numero_ejecucion = int(cfg.get('NumeroEjecucion', 1))
+        
+        fecha_ejecucion = datetime.now()
+        
+        print(f"[INFO] Ruta base: {ruta_base}")
+        print(f"[INFO] Numero ejecucion: {numero_ejecucion}")
+        print(f"[INFO] Fecha ejecucion: {fecha_ejecucion}")
+        
+        # 2. Verificar acceso a ruta
+        print("\n[PASO 1] Verificando acceso a File Server...")
+        if not verificar_acceso_ruta(ruta_base):
+            raise Exception(f"No se tiene acceso a la ruta: {ruta_base}")
+        print("[OK] Acceso verificado")
+        
+        # 3. Crear árbol de carpetas
+        print("\n[PASO 2] Creando/verificando arbol de carpetas...")
+        rutas = crear_arbol_carpetas(ruta_base, fecha_ejecucion, numero_ejecucion)
+        print("[OK] Arbol de carpetas listo")
+        
+        # 4. Conectar a BD y procesar
+        with crear_conexion_db(cfg) as cx:
+            
+            # 5. Procesar archivos de cada registro
+            print("\n[PASO 3] Procesando archivos de registros...")
+            
+            query_registros = """
+                SELECT 
+                    [ID],
+                    [tipo_de_documento],
+                    [actualizacionNombreArchivos],
+                    [rutaRespaldo],
+                    [ResultadoFinalAntesEventos],
+                    [numero_de_liquidacion_u_orden_de_compra]
+                FROM [CxP].[DocumentsProcessing]
+                WHERE [actualizacionNombreArchivos] IS NOT NULL
+                  AND [actualizacionNombreArchivos] <> ''
+            """
+            
+            df_registros = pd.read_sql(query_registros, cx)
+            print(f"[INFO] {len(df_registros)} registros para procesar archivos")
+            
+            archivos_procesados = 0
+            
+            for idx, reg in df_registros.iterrows():
+                try:
+                    registro_id = reg['ID']
+                    tipo_doc = safe_str(reg['tipo_de_documento'])
+                    nombre_archivos = safe_str(reg['actualizacionNombreArchivos'])
+                    ruta_respaldo = safe_str(reg['rutaRespaldo'])
+                    resultado_final = safe_str(reg['ResultadoFinalAntesEventos'])
+                    numero_oc = safe_str(reg['numero_de_liquidacion_u_orden_de_compra'])
+                    
+                    # Verificar archivos
+                    xml_enc, pdf_enc, ruta_xml, ruta_pdf = verificar_archivos_insumo(ruta_respaldo, nombre_archivos)
+                    
+                    # Actualizar BD con estado de insumos
+                    cur = cx.cursor()
+                    cur.execute("""
+                        UPDATE [CxP].[DocumentsProcessing]
+                        SET [InsumoXML] = ?,
+                            [InsumoPDF] = ?
+                        WHERE [ID] = ?
+                    """, (
+                        'Encontrado' if xml_enc else 'No Encontrado',
+                        'Encontrado' if pdf_enc else 'No Encontrado',
+                        registro_id
+                    ))
+                    cur.close()
+                    
+                    # Determinar carpeta destino y mover archivos
+                    if xml_enc or pdf_enc:
+                        carpeta_destino = determinar_carpeta_destino(resultado_final, tipo_doc)
+                        ruta_destino_completa = os.path.join(rutas['insumos_cxp'], carpeta_destino)
+                        
+                        # Determinar si copiar a comercializados
+                        ruta_comercializados = None
+                        if numero_oc.startswith('50'):
+                            ruta_comercializados = rutas['comercializados_insumo']
+                        
+                        nueva_ruta = mover_archivos_a_destino(
+                            ruta_xml, ruta_pdf, ruta_destino_completa,
+                            numero_oc, ruta_comercializados
+                        )
+                        
+                        if nueva_ruta:
+                            cur = cx.cursor()
+                            cur.execute("""
+                                UPDATE [CxP].[DocumentsProcessing]
+                                SET [rutaRespaldo] = ?
+                                WHERE [ID] = ?
+                            """, (nueva_ruta, registro_id))
+                            cur.close()
+                        
+                        archivos_procesados += 1
+                    
+                except Exception as e:
+                    print(f"[ERROR] Error procesando registro {idx}: {str(e)}")
+                    continue
+            
+            print(f"[OK] {archivos_procesados} archivos procesados")
+            
+            # 6. Generar reportes
+            print("\n[PASO 4] Generando reportes...")
+            
+            rutas_reportes = {}
+            
+            # Reporte ejecución CXP (diario)
+            print("  - Generando Reporte_de_ejecucion_CXP...")
+            rutas_reportes['Reporte CXP'] = generar_reporte_ejecucion_cxp(cx, rutas, fecha_ejecucion)
+            
+            # Reporte GRANOS (mensual)
+            print("  - Generando Reporte_de_ejecucion_GRANOS...")
+            rutas_reportes['Reporte GRANOS'] = generar_reporte_granos(cx, rutas, fecha_ejecucion)
+            
+            # Reporte MAÍZ (mensual)
+            print("  - Generando Reporte_de_ejecucion_MAIZ...")
+            rutas_reportes['Reporte MAIZ'] = generar_reporte_maiz(cx, rutas, fecha_ejecucion)
+            
+            # Reporte COMERCIALIZADOS (diario)
+            print("  - Generando Reporte_de_ejecucion_COMERCIALIZADOS...")
+            rutas_reportes['Reporte COMERCIALIZADOS'] = generar_reporte_comercializados(cx, rutas, fecha_ejecucion)
+            
+            # Reporte KPIs (mensual)
+            print("  - Generando Reporte_KPIs_CXP...")
+            rutas_reportes['Reporte KPIs'] = generar_reporte_kpis(cx, rutas, fecha_ejecucion)
+            
+            # Consolidado Con Novedad (mensual)
+            print("  - Generando Consolidado_FV_CXP_ConNovedad...")
+            rutas_reportes['Consolidado Con Novedad'] = generar_consolidado_con_novedad(cx, rutas, fecha_ejecucion)
+            
+            # Consolidado No Exitosos Rechazados (mensual)
+            print("  - Generando Consolidado_CXP_NoExitososRechazados...")
+            rutas_reportes['Consolidado No Exitosos'] = generar_consolidado_no_exitosos_rechazados(cx, rutas, fecha_ejecucion)
+            
+            # Consolidado Pendientes (mensual)
+            print("  - Generando Consolidado_CXP_Pendientes...")
+            rutas_reportes['Consolidado Pendientes'] = generar_consolidado_pendientes(cx, rutas, fecha_ejecucion)
+            
+            # Consolidado Global Anual
+            print("  - Generando Consolidado_Global_CXP...")
+            rutas_reportes['Consolidado Global'] = generar_consolidado_global_anual(cx, rutas, fecha_ejecucion)
+            
+            # Consolidado NC/ND (mensual)
+            print("  - Generando Consolidado_NC_ND_CXP...")
+            rutas_reportes['Consolidado NC/ND'] = generar_consolidado_nc_nd(cx, rutas, fecha_ejecucion)
+            
+            print("[OK] Reportes generados")
+        
+        # 7. Enviar notificación
+        print("\n[PASO 5] Enviando notificacion de finalizacion...")
+        enviar_notificacion_finalizacion(cfg, rutas_reportes, exito=True)
+        
+        # Fin del procesamiento
+        tiempo_total = time.time() - t_inicio
+        
+        print("")
+        print("=" * 80)
+        print("[FIN] HU8 - Generación de Reportes CxP completado")
+        print("=" * 80)
+        print("[ESTADISTICAS]")
+        print(f"  Archivos procesados: {archivos_procesados}")
+        print(f"  Reportes generados: {len([r for r in rutas_reportes.values() if r])}")
+        print(f"  Tiempo total: {round(tiempo_total, 2)}s")
+        print("=" * 80)
+        
+        resumen = f"HU8 completada. {archivos_procesados} archivos procesados, {len([r for r in rutas_reportes.values() if r])} reportes generados"
+        
+        SetVar("vLocStrResultadoSP", "True")
+        SetVar("vLocStrResumenSP", resumen)
+        
+    except Exception as e:
+        print("")
+        print("=" * 80)
+        print("[ERROR CRITICO] La funcion HU8_GenerarReportesCxP fallo")
+        print("=" * 80)
+        print(f"[ERROR] Mensaje: {str(e)}")
+        print(traceback.format_exc())
+        print("=" * 80)
+        
+        # Intentar enviar notificación de error
+        try:
+            enviar_notificacion_finalizacion(cfg, {}, exito=False)
+        except:
+            pass
+        
+        SetVar("vGblStrDetalleError", str(e))
+        SetVar("vGblStrSystemError", traceback.format_exc())
+        SetVar("vLocStrResultadoSP", "False")
+
+
+# Mock para pruebas locales
+if __name__ == "__main__":
+    _mock_vars = {}
+    def GetVar(name):
+        return _mock_vars.get(name, "")
+    def SetVar(name, value):
+        _mock_vars[name] = value
+        print(f"[SETVAR] {name} = {value}")
+    
+    _mock_vars["vLocDicConfig"] = '''{
+        "ServidorBaseDatos": "localhost",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "RutaFileServer": "C:/temp/BOT_CXP",
+        "NumeroEjecucion": 1
+    }'''
+    _mock_vars["vGblStrUsuarioBaseDatos"] = "sa"
+    _mock_vars["vGblStrClaveBaseDatos"] = "password"
+    
+    print("Ejecutando prueba local...")
+    # HU8_GenerarReportesCxP()
