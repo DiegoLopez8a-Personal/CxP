@@ -195,7 +195,11 @@ def ZPAF_ValidarActivosFijos():
         usuario = GetVar("vGblStrUsuarioBaseDatos")
         contrasena = GetVar("vGblStrClaveBaseDatos")
         
-        conn_str = (
+        # Estrategia de conexion:
+        # 1. Intentar con Usuario y Contraseña (para Produccion)
+        # 2. Si falla, intentar con Trusted Connection (para Desarrollo/Windows Auth)
+
+        conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
             f"DATABASE={cfg['NombreBaseDatos']};"
@@ -204,19 +208,51 @@ def ZPAF_ValidarActivosFijos():
             "autocommit=False;"
         )
         
+        conn_str_trusted = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={cfg['ServidorBaseDatos']};"
+            f"DATABASE={cfg['NombreBaseDatos']};"
+            "Trusted_Connection=yes;"
+            "autocommit=False;"
+        )
+
         cx = None
+        conectado = False
+        excepcion_final = None
+
+        # Intento 1: Autenticacion SQL
+        print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
         for attempt in range(max_retries):
             try:
-                cx = pyodbc.connect(conn_str, timeout=30)
+                cx = pyodbc.connect(conn_str_auth, timeout=30)
                 cx.autocommit = False
-                print(f"[DEBUG] Conexion SQL abierta (intento {attempt + 1})")
+                conectado = True
+                print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
                 break
             except pyodbc.Error as e:
+                print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+                excepcion_final = e
                 if attempt < max_retries - 1:
-                    print(f"[WARNING] Intento {attempt + 1} fallido, reintentando...")
-                    time.sleep(1 * (attempt + 1))
-                    continue
-                raise
+                    time.sleep(1)
+
+        # Intento 2: Trusted Connection (si fallo el anterior)
+        if not conectado:
+            print("[DEBUG] Intentando conexion Trusted Connection (Windows Auth)...")
+            for attempt in range(max_retries):
+                try:
+                    cx = pyodbc.connect(conn_str_trusted, timeout=30)
+                    cx.autocommit = False
+                    conectado = True
+                    print(f"[DEBUG] Conexion SQL (Trusted) abierta exitosamente (intento {attempt + 1})")
+                    break
+                except pyodbc.Error as e:
+                    print(f"[WARNING] Fallo conexion Trusted Connection (intento {attempt + 1}): {str(e)}")
+                    excepcion_final = e
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+
+        if not conectado:
+            raise excepcion_final or Exception("No se pudo conectar a la base de datos con ningun metodo")
         
         try:
             yield cx
@@ -904,6 +940,8 @@ def ZPAF_ValidarActivosFijos():
         )
         
         # Campos adicionales del histórico
+        # Nota: 'Activo fijo', 'Capitalizado el' y 'Criterio clasif. 2' NO se crean aqui.
+        # Se crean en sus respectivos pasos de validacion especifica.
         campos_historico = [
             ('Tipo NIF', 'TipoNif'),
             ('Acreedor', 'Acreedor'),
@@ -916,10 +954,7 @@ def ZPAF_ValidarActivosFijos():
             ('Cuenta', 'Cuenta'),
             ('Ciudad proveedor', 'CiudadProveedor'),
             ('DOC.FI.ENTRADA', 'DocFiEntrada'),
-            ('CTA 26', 'Cuenta26'),
-            ('Activo fijo', 'ActivoFijo'),
-            ('Capitalizado el', 'CapitalizadoEl'),
-            ('Criterio clasif. 2', 'CriterioClasif2')
+            ('CTA 26', 'Cuenta26')
         ]
         
         for nombre_item, campo_historico in campos_historico:
