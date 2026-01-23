@@ -620,6 +620,14 @@ def ZPAF_ValidarActivosFijos():
         """
         Actualiza o inserta items en [CxP].[CxP_Comparativa].
         
+        Lógica:
+            - Obtiene todos los IDs existentes para el Item dado.
+            - Recorre los valores nuevos 1 a 1.
+            - Si hay ID existente para el índice actual -> UPDATE.
+            - Si NO hay ID existente (nuevos > existentes) -> INSERT.
+            - Si hay más existentes que nuevos (existentes > nuevos) -> Se dejan quietos (sin cambios).
+            - Maneja valores None/Vacíos convirtiéndolos a NULL de base de datos.
+
         Args:
             id_reg: ID del registro
             cx: Conexión a BD
@@ -634,100 +642,79 @@ def ZPAF_ValidarActivosFijos():
         """
         cur = cx.cursor()
         
-        # Contar items existentes
+        def safe_db_val(v):
+            """Convierte strings vacios o 'None' a None real para BD"""
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s or s.lower() == 'none' or s.lower() == 'null':
+                return None
+            return s
+
+        # Contar items existentes para saber si hacemos UPDATE o INSERT
+        # Nota: La tabla no tiene PK unica, usamos ROW_NUMBER en CTE para actualizar filas especificas
         query_count = """
         SELECT COUNT(*)
         FROM [CxP].[CxP_Comparativa]
-        WHERE NIT = ? AND Factura = ? AND Item = ?
+        WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
-        cur.execute(query_count, (nit, factura, nombre_item))
-        count_actual = cur.fetchone()[0]
+        cur.execute(query_count, (nit, factura, nombre_item, id_reg))
+        count_existentes = cur.fetchone()[0]
         
-        count_necesario = len(valores_lista)
+        count_nuevos = len(valores_lista)
         
-        # Manejar valor_aprobado como lista o valor único
+        # Preparar lista de aprobados
         if isinstance(valor_aprobado, list):
             aprobados_lista = valor_aprobado
         else:
-            aprobados_lista = [valor_aprobado] * count_necesario
+            aprobados_lista = [valor_aprobado] * count_nuevos
         
-        if count_actual == 0:
-            # INSERT nuevos registros
-            for i, valor in enumerate(valores_lista):
+        # Iterar sobre los valores nuevos para actualizar o insertar
+        for i, valor in enumerate(valores_lista):
+            val_compra = safe_db_val(valor)
+            val_xml = safe_db_val(valor_xml) if actualizar_valor_xml else None
+            val_aprob = safe_db_val(aprobados_lista[i]) if actualizar_aprobado and i < len(aprobados_lista) else None
+
+            if i < count_existentes:
+                # UPDATE existente usando CTE y ROW_NUMBER para apuntar a la fila 'i+1'
+                # IMPORTANTE: Al no haber PK, el orden (SELECT NULL) es arbitrario pero estable para el bloque
+
+                update_query = """
+                WITH CTE AS (
+                    SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
+                           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
+                    FROM [CxP].[CxP_Comparativa]
+                    WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
+                )
+                UPDATE CTE
+                SET Valor_Orden_de_Compra = ?
+                """
+                params = [nit, factura, nombre_item, id_reg, val_compra]
+                
+                if actualizar_valor_xml:
+                    update_query += ", Valor_XML = ?"
+                    params.append(val_xml)
+                if actualizar_aprobado:
+                    update_query += ", Aprobado = ?"
+                    params.append(val_aprob)
+
+                update_query += " WHERE rn = ?"
+                params.append(i + 1) # ROW_NUMBER empieza en 1
+                
+                cur.execute(update_query, params)
+
+            else:
+                # INSERT nuevo (excedente)
                 insert_query = """
                 INSERT INTO [CxP].[CxP_Comparativa] (
                     ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
                     Valor_XML, Aprobado
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """
-                vxml = valor_xml if actualizar_valor_xml else None
-                vaprob = aprobados_lista[i] if actualizar_aprobado and i < len(aprobados_lista) else None
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, valor, vxml, vaprob))
-        
-        elif count_actual < count_necesario:
-            # UPDATE existentes + INSERT faltantes
-            for i in range(count_actual):
-                update_query = "UPDATE [CxP].[CxP_Comparativa] SET Valor_Orden_de_Compra = ?"
-                params = [valores_lista[i]]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(valor_xml)
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(aprobados_lista[i] if i < len(aprobados_lista) else None)
-                
-                update_query += """
-                WHERE NIT = ? AND Factura = ? AND Item = ?
-                  AND ID_registro IN (
-                    SELECT TOP 1 ID_registro FROM [CxP].[CxP_Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ?
-                    ORDER BY ID_registro
-                    OFFSET ? ROWS
-                  )
-                """
-                params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
-                cur.execute(update_query, params)
-            
-            # INSERT faltantes
-            for i in range(count_actual, count_necesario):
-                insert_query = """
-                INSERT INTO [CxP].[CxP_Comparativa] (
-                    ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
-                    Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """
-                vxml = valor_xml if actualizar_valor_xml else None
-                vaprob = aprobados_lista[i] if actualizar_aprobado and i < len(aprobados_lista) else None
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, valores_lista[i], vxml, vaprob))
-        
-        else:
-            # UPDATE existentes
-            for i, valor in enumerate(valores_lista):
-                update_query = "UPDATE [CxP].[CxP_Comparativa] SET Valor_Orden_de_Compra = ?"
-                params = [valor]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(valor_xml)
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(aprobados_lista[i] if i < len(aprobados_lista) else None)
-                
-                update_query += """
-                WHERE NIT = ? AND Factura = ? AND Item = ?
-                  AND ID_registro IN (
-                    SELECT TOP 1 ID_registro FROM [CxP].[CxP_Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ?
-                    ORDER BY ID_registro
-                    OFFSET ? ROWS
-                  )
-                """
-                params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
-                cur.execute(update_query, params)
+                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, val_compra, val_xml, val_aprob))
         
         cur.close()
-        print(f"[UPDATE] Item '{nombre_item}' actualizado - {count_necesario} valor(es)")
+        print(f"[UPDATE] Item '{nombre_item}' procesado - {count_nuevos} valor(es) (Existían: {count_existentes})")
     
     def actualizar_estado_comparativa(cx, nit, factura, estado):
         """
@@ -940,7 +927,7 @@ def ZPAF_ValidarActivosFijos():
         )
         
         # Campos adicionales del histórico
-        # Nota: 'Activo fijo', 'Capitalizado el' y 'Criterio clasif. 2' NO se crean aqui.
+        # Nota: 'Capitalizado el' y 'Criterio clasif. 2' NO se crean aqui.
         # Se crean en sus respectivos pasos de validacion especifica.
         campos_historico = [
             ('Tipo NIF', 'TipoNif'),
@@ -954,7 +941,8 @@ def ZPAF_ValidarActivosFijos():
             ('Cuenta', 'Cuenta'),
             ('Ciudad proveedor', 'CiudadProveedor'),
             ('DOC.FI.ENTRADA', 'DocFiEntrada'),
-            ('CTA 26', 'Cuenta26')
+            ('CTA 26', 'Cuenta26'),
+            ('Activo fijo', 'ActivoFijo')
         ]
         
         for nombre_item, campo_historico in campos_historico:
