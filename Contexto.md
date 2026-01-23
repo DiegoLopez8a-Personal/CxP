@@ -2,11 +2,14 @@ Archivo que contiene el contexto de lo que se muestra en las Historias de usuari
 
 # Contexto general:
 - Al momento de referirse a las pocisiones dentro de las historias de usuario, se hace referencia a cada uno de los objetos que puedan aparecer en los campos del registros dentro de la tabla [CxP].[HU41_CadidatosValidacion] en esta tabla los campos pueden tener varios valores y estar separados por "|" entonces si un campo tiene 4 valores separados por "|" se entendera que tiee 4 pocisiones.
-- Al momento de generar los registros en la tabla [dbo].[CxP.Comparativa] se deben verificar
+
+- Al momento de generar los registros en la tabla [dbo].[CxP.Comparativa] se deben verificar cuantos Itemsa con la misma descripcion ya se encuentran creados, por ejemplo si se identifican que hay 4 pocisiones y ya se encuentran 2 Items creados para "Clase de Impuesto" (por ejemplo), entonces solo sera necesario crear 2 mas y agregar los valores dentro de las columnas que se indican.
+
 - Tener en cuenta que, en CADA VALIDACIÓN cuyo resultado sea "CON
 NOVEDAD" se deberá validar si el campo "forma_de_pago_dp" es igual a 01 o 1 y
 adicionar la palabra CONTADO en caso de que, SI SEA IGUAL, ejemplo "CON
 NOVEDAD CONTADO". Si NO es igual a 01 o 1 seria CON NOVEDAD
+
 - Ten presente que los campos pueden estar NULL o vacios dependiendo de la validacion esto podria ser un caso malo o bueno.
 
 # Revision del flujo de el Script HU4.1 ZPAF
