@@ -12,7 +12,7 @@ def ZVEN_ValidarComercializados():
            - Si NO existe: marca EN ESPERA y mueve insumos a carpeta destino
            - Si EXISTE: valida posiciones contra histórico, TRM, cantidad/precio, nombre emisor
         4. Actualiza [CxP].[DocumentsProcessing] con estados y observaciones
-        5. Genera trazabilidad en [CxP].[CxP_Comparativa]
+        5. Genera trazabilidad en [dbo].[CxP.Comparativa]
     
     NOTA IMPORTANTE SOBRE PaymentMeans:
         - Si PaymentMeans = '01', se agrega ' CONTADO' al resultado final
@@ -618,7 +618,7 @@ def ZVEN_ValidarComercializados():
                                      actualizar_valor_xml=False, valor_xml=None,
                                      actualizar_aprobado=False, valor_aprobado=None):
         """
-        Actualiza o inserta items en [CxP].[CxP_Comparativa].
+        Actualiza o inserta items en [dbo].[CxP.Comparativa].
         
         Maneja:
             - Creación de nuevos items si no existen
@@ -643,7 +643,7 @@ def ZVEN_ValidarComercializados():
         # Contar items existentes
         query_count = """
         SELECT COUNT(*)
-        FROM [CxP].[CxP_Comparativa]
+        FROM [dbo].[CxP.Comparativa]
         WHERE NIT = ? AND Factura = ? AND Item = ?
         """
         cur.execute(query_count, (nit, factura, nombre_item))
@@ -661,7 +661,7 @@ def ZVEN_ValidarComercializados():
             # INSERT nuevos registros
             for i, valor in enumerate(valores_lista):
                 insert_query = """
-                INSERT INTO [CxP].[CxP_Comparativa] (
+                INSERT INTO [dbo].[CxP.Comparativa] (
                     ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
                     Valor_Orden_de_Compra_Comercializados, Valor_XML, Aprobado
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -674,7 +674,7 @@ def ZVEN_ValidarComercializados():
         elif count_actual < count_necesario:
             # UPDATE existentes + INSERT faltantes
             for i in range(count_actual):
-                update_query = "UPDATE [CxP].[CxP_Comparativa] SET Valor_Orden_de_Compra = ?, Valor_Orden_de_Compra_Comercializados = ?"
+                update_query = "UPDATE [dbo].[CxP.Comparativa] SET Valor_Orden_de_Compra = ?, Valor_Orden_de_Compra_Comercializados = ?"
                 params = [valores_lista[i], valores_comercializados[i] if valores_comercializados[i] != '' else None]
                 
                 if actualizar_valor_xml:
@@ -687,7 +687,7 @@ def ZVEN_ValidarComercializados():
                 update_query += """
                 WHERE NIT = ? AND Factura = ? AND Item = ?
                   AND ID_registro IN (
-                    SELECT TOP 1 ID_registro FROM [CxP].[CxP_Comparativa]
+                    SELECT TOP 1 ID_registro FROM [dbo].[CxP.Comparativa]
                     WHERE NIT = ? AND Factura = ? AND Item = ?
                     ORDER BY ID_registro
                     OFFSET ? ROWS
@@ -699,7 +699,7 @@ def ZVEN_ValidarComercializados():
             # INSERT faltantes
             for i in range(count_actual, count_necesario):
                 insert_query = """
-                INSERT INTO [CxP].[CxP_Comparativa] (
+                INSERT INTO [dbo].[CxP.Comparativa] (
                     ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
                     Valor_Orden_de_Compra_Comercializados, Valor_XML, Aprobado
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -712,7 +712,7 @@ def ZVEN_ValidarComercializados():
         else:
             # UPDATE existentes
             for i, valor in enumerate(valores_lista):
-                update_query = "UPDATE [CxP].[CxP_Comparativa] SET Valor_Orden_de_Compra = ?, Valor_Orden_de_Compra_Comercializados = ?"
+                update_query = "UPDATE [dbo].[CxP.Comparativa] SET Valor_Orden_de_Compra = ?, Valor_Orden_de_Compra_Comercializados = ?"
                 params = [valor, valores_comercializados[i] if valores_comercializados[i] != '' else None]
                 
                 if actualizar_valor_xml:
@@ -725,7 +725,7 @@ def ZVEN_ValidarComercializados():
                 update_query += """
                 WHERE NIT = ? AND Factura = ? AND Item = ?
                   AND ID_registro IN (
-                    SELECT TOP 1 ID_registro FROM [CxP].[CxP_Comparativa]
+                    SELECT TOP 1 ID_registro FROM [dbo].[CxP.Comparativa]
                     WHERE NIT = ? AND Factura = ? AND Item = ?
                     ORDER BY ID_registro
                     OFFSET ? ROWS
@@ -749,7 +749,7 @@ def ZVEN_ValidarComercializados():
         """
         cur = cx.cursor()
         update_sql = """
-        UPDATE [CxP].[CxP_Comparativa]
+        UPDATE [dbo].[CxP.Comparativa]
         SET Estado_validacion_antes_de_eventos = ?
         WHERE NIT = ? AND Factura = ?
         """

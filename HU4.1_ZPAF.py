@@ -18,7 +18,7 @@ def ZPAF_ValidarActivosFijos():
            i. Valida Criterio clasif. 2 (según indicador)
            j. Valida Cuenta (debe ser 2695950020)
         3. Actualiza [CxP].[DocumentsProcessing] con estados y observaciones
-        4. Genera trazabilidad en [CxP].[CxP_Comparativa]
+        4. Genera trazabilidad en [dbo].[CxP.Comparativa]
     
     NOTA IMPORTANTE SOBRE PaymentMeans:
         - Si PaymentMeans = '01', se agrega ' CONTADO' al resultado final
@@ -618,7 +618,7 @@ def ZPAF_ValidarActivosFijos():
                                      actualizar_valor_xml=False, valor_xml=None,
                                      actualizar_aprobado=False, valor_aprobado=None):
         """
-        Actualiza o inserta items en [CxP].[CxP_Comparativa].
+        Actualiza o inserta items en [dbo].[CxP.Comparativa].
         
         Lógica:
             - Obtiene todos los IDs existentes para el Item dado.
@@ -655,7 +655,7 @@ def ZPAF_ValidarActivosFijos():
         # Nota: La tabla no tiene PK unica, usamos ROW_NUMBER en CTE para actualizar filas especificas
         query_count = """
         SELECT COUNT(*)
-        FROM [CxP].[CxP_Comparativa]
+        FROM [dbo].[CxP.Comparativa]
         WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
         cur.execute(query_count, (nit, factura, nombre_item, id_reg))
@@ -683,7 +683,7 @@ def ZPAF_ValidarActivosFijos():
                 WITH CTE AS (
                     SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
                            ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
-                    FROM [CxP].[CxP_Comparativa]
+                    FROM [dbo].[CxP.Comparativa]
                     WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
                 )
                 UPDATE CTE
@@ -706,7 +706,7 @@ def ZPAF_ValidarActivosFijos():
             else:
                 # INSERT nuevo (excedente)
                 insert_query = """
-                INSERT INTO [CxP].[CxP_Comparativa] (
+                INSERT INTO [dbo].[CxP.Comparativa] (
                     ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
                     Valor_XML, Aprobado
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -728,7 +728,7 @@ def ZPAF_ValidarActivosFijos():
         """
         cur = cx.cursor()
         update_sql = """
-        UPDATE [CxP].[CxP_Comparativa]
+        UPDATE [dbo].[CxP.Comparativa]
         SET Estado_validacion_antes_de_eventos = ?
         WHERE NIT = ? AND Factura = ?
         """
