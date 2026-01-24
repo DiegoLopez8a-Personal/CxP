@@ -2,7 +2,7 @@ def ZPSA_ZPSS_ValidarServicios():
     """
     Función para procesar las validaciones de ZPSA/ZPSS/43 (Pedidos de Servicios).
     
-    VERSIÓN: 1.0 - 12 Enero 2026
+    VERSIÓN: 2.0 - Refactorizado para alinearse con ZPAF
     
     FLUJO PRINCIPAL:
         1. Lee registros de [CxP].[HU41_CandidatosValidacion] con ClaseDePedido_hoc IN ('ZPSA', 'ZPSS', '43')
@@ -10,8 +10,8 @@ def ZPSA_ZPSS_ValidarServicios():
            a. Determina si es USD o no (campo Moneda_hoc)
            b. Si USD: compara VlrPagarCop vs PorCalcular_hoc
            c. Si NO USD: compara Valor de la Compra LEA vs PorCalcular_hoc
-           d. Valida TRM (5 decimales, manejo punto/coma)
-           e. Valida Nombre Emisor
+           d. Valida TRM (tolerancia 0.01)
+           e. Valida Nombre Emisor (Lógica ZPAF: palabras coincidentes sin importar orden)
            f. Valida según campo Orden:
               - Si tiene Orden 15: Indicador, Centro coste vacío, Cuenta=5199150001, Clase orden
               - Si tiene Orden 53: Centro coste con valor (ESTADÍSTICAS)
@@ -46,7 +46,6 @@ def ZPSA_ZPSS_ValidarServicios():
     import time
     import warnings
     import re
-    from itertools import combinations
     import os
     
     warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy')
@@ -130,32 +129,15 @@ def ZPSA_ZPSS_ValidarServicios():
     
     @contextmanager
     def crear_conexion_db(cfg, max_retries=3):
-        """
-        Crea conexión a la base de datos con reintentos y manejo de transacciones.
-
-        Args:
-            cfg: Diccionario de configuración con ServidorBaseDatos y NombreBaseDatos
-            max_retries: Número máximo de reintentos
-
-        Yields:
-            pyodbc.Connection: Conexión a la base de datos
-
-        Raises:
-            ValueError: Si faltan parámetros de configuración
-            pyodbc.Error: Si falla la conexión después de todos los reintentos
-        """
+        """Crea conexión a la base de datos con reintentos."""
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
         if missing:
             raise ValueError(f"Parametros faltantes: {', '.join(missing)}")
 
-        usuario = cfg['UsuarioBaseDatos']
-        contrasena = cfg['ClaveBaseDatos']
+        usuario = GetVar("vGblStrUsuarioBaseDatos")
+        contrasena = GetVar("vGblStrClaveBaseDatos")
         
-        # Estrategia de conexion:
-        # 1. Intentar con Usuario y Contraseña (para Produccion)
-        # 2. Si falla, intentar con Trusted Connection (para Desarrollo/Windows Auth)
-
         conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
@@ -178,22 +160,20 @@ def ZPSA_ZPSS_ValidarServicios():
         excepcion_final = None
 
         # Intento 1: Autenticacion SQL
-        ########################
-        # print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
-        # for attempt in range(max_retries):
-        #     try:
-        #         cx = pyodbc.connect(conn_str_auth, timeout=30)
-        #         cx.autocommit = False
-        #         conectado = True
-        #         print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
-        #         break
-        #     except pyodbc.Error as e:
-        #         print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
-        #         excepcion_final = e
-        #         if attempt < max_retries - 1:
-        #             time.sleep(1)
+        for attempt in range(max_retries):
+            try:
+                cx = pyodbc.connect(conn_str_auth, timeout=30)
+                cx.autocommit = False
+                conectado = True
+                print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
+                break
+            except pyodbc.Error as e:
+                print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+                excepcion_final = e
+                if attempt < max_retries - 1:
+                    time.sleep(1)
 
-        # Intento 2: Trusted Connection (si fallo el anterior)
+        # Intento 2: Trusted Connection
         if not conectado:
             print("[DEBUG] Intentando conexion Trusted Connection (Windows Auth)...")
             for attempt in range(max_retries):
@@ -231,7 +211,7 @@ def ZPSA_ZPSS_ValidarServicios():
                     pass
     
     # =========================================================================
-    # FUNCIONES DE NORMALIZACIÓN DE NOMBRES
+    # FUNCIONES DE NORMALIZACIÓN DE NOMBRES (ZPAF LOGIC)
     # =========================================================================
     
     def normalizar_nombre_empresa(nombre):
@@ -257,86 +237,45 @@ def ZPSA_ZPSS_ValidarServicios():
         
         return nombre_limpio
     
-    def convertir_nombre_persona(nombre_completo):
-        """Convierte el orden del nombre de persona."""
-        if pd.isna(nombre_completo) or nombre_completo == "":
-            return ""
-        
-        partes = safe_str(nombre_completo).strip().split()
-        
-        if len(partes) >= 3:
-            apellidos = partes[-2:]
-            nombres = partes[:-2]
-            return " ".join(apellidos + nombres)
-        
-        return nombre_completo
-    
     def comparar_nombres_proveedor(nombre_xml, nombre_sap):
-        """Compara nombres de proveedores aplicando todas las reglas."""
+        """
+        Compara nombres de proveedores dividiendo por espacios y verificando
+        que contengan exactamente las mismas palabras sin importar el orden (LOGICA ZPAF).
+        """
         if pd.isna(nombre_xml) or pd.isna(nombre_sap):
             return False
         
-        nombre_xml_empresa = normalizar_nombre_empresa(nombre_xml)
-        nombre_sap_empresa = normalizar_nombre_empresa(nombre_sap)
+        nombre_xml_limpio = normalizar_nombre_empresa(str(nombre_xml))
+        nombre_sap_limpio = normalizar_nombre_empresa(str(nombre_sap))
         
-        if nombre_xml_empresa == nombre_sap_empresa:
-            return True
+        lista_xml = nombre_xml_limpio.split()
+        lista_sap = nombre_sap_limpio.split()
         
-        nombre_xml_persona = normalizar_nombre_empresa(convertir_nombre_persona(nombre_xml))
-        nombre_sap_persona = normalizar_nombre_empresa(convertir_nombre_persona(nombre_sap))
-        
-        if nombre_xml_persona == nombre_sap_empresa or nombre_xml_empresa == nombre_sap_persona:
-            return True
-        
-        if nombre_xml_empresa == nombre_sap_persona:
-            return True
-        
-        return False
+        if len(lista_xml) != len(lista_sap):
+            return False
+
+        return sorted(lista_xml) == sorted(lista_sap)
     
     # =========================================================================
-    # FUNCIONES DE VALIDACION
+    # FUNCIONES DE VALIDACION DE VALORES (ZPAF LOGIC)
     # =========================================================================
     
-    def validar_tolerancia_numerica(valor1, valor2, tolerancia=500):
-        """Valida si dos valores numéricos están dentro del rango de tolerancia."""
-        try:
-            val1 = normalizar_decimal(valor1)
-            val2 = normalizar_decimal(valor2)
-            return abs(val1 - val2) <= tolerancia
-        except:
-            return False
-    
-    def comparar_trm_5_decimales(trm_xml, trm_sap):
+    def comparar_suma_total(valores_por_calcular, valor_objetivo, tolerancia=500):
         """
-        Compara TRM con precisión de 5 decimales.
-        Maneja conversión de coma a punto.
+        Suma TODOS los valores de la lista y compara si el total coincide
+        con el valor objetivo dentro de un rango de tolerancia (LOGICA ZPAF).
         """
-        try:
-            val_xml = normalizar_decimal(trm_xml)
-            val_sap = normalizar_decimal(trm_sap)
-            
-            # Redondear a 5 decimales para comparación
-            val_xml_r = round(val_xml, 5)
-            val_sap_r = round(val_sap, 5)
-            
-            return abs(val_xml_r - val_sap_r) < 0.00001
-        except:
-            return False
-    
-    def encontrar_combinacion_posiciones(valores_por_calcular, valor_objetivo, tolerancia=500):
-        """Encuentra una combinación de posiciones cuya suma coincida con el valor objetivo."""
         valor_objetivo = normalizar_decimal(valor_objetivo)
         
-        if valor_objetivo <= 0:
+        if valor_objetivo <= 0 or not valores_por_calcular:
             return False, [], 0
+
+        suma_total = sum(normalizar_decimal(valor) for posicion, valor in valores_por_calcular)
         
-        for r in range(1, len(valores_por_calcular) + 1):
-            for combo in combinations(range(len(valores_por_calcular)), r):
-                suma = sum(normalizar_decimal(valores_por_calcular[i][1]) for i in combo)
-                if abs(suma - valor_objetivo) <= tolerancia:
-                    posiciones_usadas = [valores_por_calcular[i][0] for i in combo]
-                    return True, posiciones_usadas, suma
-        
+        if abs(suma_total - valor_objetivo) <= tolerancia:
+            todas_las_posiciones = [posicion for posicion, valor in valores_por_calcular]
+            return True, todas_las_posiciones, suma_total
+
         return False, [], 0
     
     def validar_indicador_servicios_orden15(indicador):
@@ -454,28 +393,15 @@ def ZPSA_ZPSS_ValidarServicios():
     # =========================================================================
     
     def actualizar_bd_cxp(cx, registro_id, campos_actualizar):
-        """
-        Actualiza campos en [CxP].[DocumentsProcessing].
-
-        IMPORTANTE: DocumentsProcessing NO tiene sufijos _dp en sus columnas.
-
-        Para ObservacionesFase_4: Conserva observaciones previas separadas por coma,
-        pero prima la última observación.
-
-        Args:
-            cx: Conexión a la base de datos
-            registro_id: ID del registro a actualizar
-            campos_actualizar: Diccionario {nombre_campo: valor}
-        """
+        """Actualiza campos en [CxP].[DocumentsProcessing]."""
         try:
             sets = []
             parametros = []
             
             for campo, valor in campos_actualizar.items():
                 if valor is not None:
-                    # Manejo especial para ObservacionesFase_4 (concatenar)
                     if campo == 'ObservacionesFase_4':
-                        sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE [{campo}] + ', ' + ? END")
+                        sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE ? + ', ' + [{campo}] END")
                         parametros.extend([valor, valor])
                     else:
                         sets.append(f"[{campo}] = ?")
@@ -487,13 +413,9 @@ def ZPSA_ZPSS_ValidarServicios():
                 
                 cur = cx.cursor()
                 cur.execute(sql, parametros)
-                affected_rows = cur.rowcount
                 cur.close()
                 
-                if affected_rows > 0:
-                    print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
-                else:
-                    print(f"[WARNING] No se encontro registro ID {registro_id} en DocumentsProcessing")
+                print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
             
         except Exception as e:
             print(f"[ERROR] Error actualizando DocumentsProcessing: {str(e)}")
@@ -612,15 +534,27 @@ def ZPSA_ZPSS_ValidarServicios():
         cur.execute(update_sql, (estado, nit, factura))
         cur.close()
     
-    def marcar_posiciones_procesadas(cx, doc_compra):
-        """Marca posiciones en Trans_Candidatos_HU41 como PROCESADO."""
+    def marcar_posiciones_procesadas(cx, doc_compra, posiciones_string):
+        """Marca posiciones en Trans_Candidatos_HU41 como PROCESADO (LOGICA ZPAF)."""
         cur = cx.cursor()
-        update_sql = """
-        UPDATE [CxP].[Trans_Candidatos_HU41]
-        SET Marca_hoc = 'PROCESADO'
-        WHERE DocCompra_hoc = ?
+
+        # 1. Hacemos el split de las posiciones
+        lista_posiciones = posiciones_string.split('|')
+
+        # 2. Preparamos el SQL de actualización
+        update_query = """
+        UPDATE [CxP].[HistoricoOrdenesCompra]
+        SET Marca = 'PROCESADO'
+        WHERE DocCompra = ? AND Posicion = ?
         """
-        cur.execute(update_sql, (doc_compra,))
+
+        # 3. Iteramos solo por las posiciones que llegaron y ejecutamos el UPDATE
+        for posicion in lista_posiciones:
+            pos = posicion.strip()
+            if pos:
+                cur.execute(update_query, (doc_compra, pos))
+
+        cx.commit()
         cur.close()
         print(f"[UPDATE] Marcado como PROCESADO - OC {doc_compra}")
     
@@ -726,7 +660,7 @@ def ZPSA_ZPSS_ValidarServicios():
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item=nombre_campo_valor,
-            val_orden_de_compra=None, # No aplica para este item especifico en esta logica o se pasa diferente
+            val_orden_de_compra=None,
             actualizar_valor_xml=True, valor_xml=str(valor_xml),
             actualizar_aprobado=True, valor_aprobado='SI'
         )
@@ -742,7 +676,7 @@ def ZPSA_ZPSS_ValidarServicios():
         # Valor PorCalcular_hoc SAP
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
-            nombre_item='ValorPorCalcularSAP', # Corregido nombre segun lista usuario
+            nombre_item='ValorPorCalcularSAP',
             val_orden_de_compra='|'.join([str(normalizar_decimal(d['PorCalcular'])) for d in datos_filtrados]),
             actualizar_aprobado=True, valor_aprobado='SI'
         )
@@ -770,11 +704,11 @@ def ZPSA_ZPSS_ValidarServicios():
         
         # Campos específicos de servicios
         campos_servicios = [
-            ('PoblacionServicio', 'PoblacionServicio'), # Corregido segun lista
-            ('ActivoFijo', 'ActivoFijo'), # Corregido segun lista
+            ('PoblacionServicio', 'PoblacionServicio'),
+            ('ActivoFijo', 'ActivoFijo'),
             ('Orden', 'Orden'),
-            ('CentroCoste', 'CentroCoste'), # Corregido segun lista
-            ('ClaseOrden', 'ClaseOrden'), # Corregido segun lista
+            ('CentroCoste', 'CentroCoste'),
+            ('ClaseOrden', 'ClaseOrden'),
             ('ElementoPEP', 'ElementoPEP'),
             ('Emplazamiento', 'Emplazamiento'),
         ]
@@ -959,10 +893,10 @@ def ZPSA_ZPSS_ValidarServicios():
                     else:
                         valor_xml = normalizar_decimal(registro.get('Valor de la Compra LEA_ddp', 0))
                     
-                    # 7. Buscar combinación de posiciones
+                    # 7. Buscar combinación de posiciones (USANDO LOGICA ZPAF: COMPARAR SUMA TOTAL)
                     valores_por_calcular = [(d['Posicion'], d['PorCalcular']) for d in datos_posiciones]
                     
-                    coincidencia_encontrada, posiciones_usadas, suma_encontrada = encontrar_combinacion_posiciones(
+                    coincidencia_encontrada, posiciones_usadas, suma_encontrada = comparar_suma_total(
                         valores_por_calcular, valor_xml, tolerancia=500
                     )
                     
@@ -982,6 +916,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             cx, registro, registro_id, nit, numero_factura, valor_xml, es_usd, observacion
                         )
                         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
                         
                         registros_con_novedad += 1
                         registros_procesados += 1
@@ -1000,12 +935,12 @@ def ZPSA_ZPSS_ValidarServicios():
                     
                     hay_novedad = False
                     
-                    # 9. Validar TRM (con 5 decimales)
+                    # 9. Validar TRM (LOGICA ZPAF: 0.01 tolerancia)
                     trm_xml = normalizar_decimal(registro.get('CalculationRate_dp', 0))
                     trm_sap = normalizar_decimal(datos_posiciones_usadas[0].get('Trm', 0))
                     
-                    if trm_xml > 0 or trm_sap > 0:
-                        trm_coincide = comparar_trm_5_decimales(trm_xml, trm_sap)
+                    if es_usd and (trm_xml > 0 or trm_sap > 0):
+                        trm_coincide = abs(trm_xml - trm_sap) < 0.01
                         
                         if not trm_coincide:
                             print(f"[INFO] TRM no coincide: XML {trm_xml} vs SAP {trm_sap}")
@@ -1035,7 +970,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_aprobado=True, valor_aprobado='SI'
                             )
                     
-                    # 10. Validar Nombre Emisor
+                    # 10. Validar Nombre Emisor (LOGICA ZPAF)
                     nombre_emisor_xml = safe_str(registro.get('nombre_emisor_dp', ''))
                     nombre_proveedor_sap = safe_str(datos_posiciones_usadas[0].get('NProveedor', ''))
                     
@@ -1716,7 +1651,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         registros_con_novedad += 1
                     else:
                         doc_compra = safe_str(registro.get('DocCompra_hoc', ''))
-                        marcar_posiciones_procesadas(cx, doc_compra)
+                        marcar_posiciones_procesadas(cx, doc_compra, safe_str(registro['Posicion_hoc']))
                         
                         campos_exitoso = {
                             'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',

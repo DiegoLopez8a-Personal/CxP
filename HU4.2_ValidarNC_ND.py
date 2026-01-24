@@ -2,7 +2,7 @@ def HU42_ValidarNotasCreditoDebito():
     """
     Función para procesar las validaciones de Notas Crédito (NC) y Notas Débito (ND).
     
-    VERSIÓN: 1.0 - 12 Enero 2026
+    VERSIÓN: 2.0 - Refactorizado para alinearse con ZPAF
     
     FLUJO PRINCIPAL NC:
         1. Verificar fecha de retoma (plazo máximo parametrizable)

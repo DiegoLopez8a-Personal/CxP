@@ -2,7 +2,7 @@ def ZVEN_ValidarComercializados():
     """
     Función para procesar las validaciones de ZVEN/50 (Pedidos Comercializados).
     
-    VERSIÓN: 1.0 - 12 Enero 2026
+    VERSIÓN: 2.0 - Refactorizado para alinearse con ZPAF
     
     FLUJO PRINCIPAL:
         1. Lee registros de [CxP].[HU41_CandidatosValidacion] con ClaseDePedido_hoc IN ('ZVEN', '50')
@@ -217,8 +217,6 @@ def ZVEN_ValidarComercializados():
         excepcion_final = None
 
         # Intento 1: Autenticacion SQL
-        ########################
-        # print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
         # for attempt in range(max_retries):
         #     try:
         #         cx = pyodbc.connect(conn_str_auth, timeout=30)
@@ -396,35 +394,17 @@ def ZVEN_ValidarComercializados():
             return False, f"Error validando Asociacion cuenta indicador: {str(e)}", None
     
     # =========================================================================
-    # FUNCIONES DE NORMALIZACIÓN Y COMPARACIÓN DE NOMBRES
+    # FUNCIONES DE NORMALIZACIÓN Y COMPARACIÓN DE NOMBRES (ZPAF LOGIC)
     # =========================================================================
     
     def normalizar_nombre_empresa(nombre):
-        """
-        Normaliza nombres de empresas según las reglas de la HU.
-        
-        Variaciones manejadas:
-            - SAS: S.A.S., S. A. S., S A S, etc.
-            - LTDA: Limitada, Ltda., Ltda
-            - S EN C: S. EN C., Comandita
-            - Mayúsculas/minúsculas
-            - Puntuación y espacios
-        
-        Args:
-            nombre: Nombre de la empresa
-            
-        Returns:
-            str: Nombre normalizado en mayúsculas sin puntuación
-        """
+        """Normaliza nombres de empresas según las reglas de la HU."""
         if pd.isna(nombre) or nombre == "":
             return ""
         
         nombre = safe_str(nombre).upper().strip()
-        
-        # Eliminar puntuación y espacios para comparación
         nombre_limpio = re.sub(r'[,.\s]', '', nombre)
         
-        # Normalizar variantes de tipo de sociedad
         reemplazos = {
             'SAS': ['SAS', 'S.A.S.', 'S.A.S', 'SAAS', 'S A S', 'S,A.S.', 'S,AS'],
             'LTDA': ['LIMITADA', 'LTDA', 'LTDA.', 'LTDA,'],
@@ -440,72 +420,24 @@ def ZVEN_ValidarComercializados():
         
         return nombre_limpio
     
-    def convertir_nombre_persona(nombre_completo):
-        """
-        Convierte el orden del nombre de persona según la HU.
-        
-        XML: Nombres + Apellidos -> SAP: Apellidos + Nombres
-        
-        Ejemplo:
-            'ALEXANDER LOZANO CALDERON' -> 'LOZANO CALDERON ALEXANDER'
-        
-        Args:
-            nombre_completo: Nombre en formato Nombres + Apellidos
-            
-        Returns:
-            str: Nombre en formato Apellidos + Nombres
-        """
-        if pd.isna(nombre_completo) or nombre_completo == "":
-            return ""
-        
-        partes = safe_str(nombre_completo).strip().split()
-        
-        if len(partes) >= 3:
-            # Los últimos 2 son apellidos, el resto son nombres
-            apellidos = partes[-2:]
-            nombres = partes[:-2]
-            return " ".join(apellidos + nombres)
-        
-        return nombre_completo
-    
     def comparar_nombres_proveedor(nombre_xml, nombre_sap):
         """
-        Compara nombres de proveedores aplicando todas las reglas de la HU.
-        
-        Aplica:
-            1. Normalización de empresas (SAS, LTDA, etc.)
-            2. Conversión de orden de nombres de persona
-            3. Comparación case-insensitive sin puntuación
-        
-        Args:
-            nombre_xml: Nombre del XML (DocumentsProcessing)
-            nombre_sap: Nombre del SAP (HistoricoOrdenesCompra)
-            
-        Returns:
-            bool: True si los nombres coinciden
+        Compara nombres de proveedores dividiendo por espacios y verificando
+        que contengan exactamente las mismas palabras sin importar el orden (LOGICA ZPAF).
         """
         if pd.isna(nombre_xml) or pd.isna(nombre_sap):
             return False
         
-        # Primero intentar como empresa
-        nombre_xml_empresa = normalizar_nombre_empresa(nombre_xml)
-        nombre_sap_empresa = normalizar_nombre_empresa(nombre_sap)
+        nombre_xml_limpio = normalizar_nombre_empresa(str(nombre_xml))
+        nombre_sap_limpio = normalizar_nombre_empresa(str(nombre_sap))
         
-        if nombre_xml_empresa == nombre_sap_empresa:
-            return True
+        lista_xml = nombre_xml_limpio.split()
+        lista_sap = nombre_sap_limpio.split()
         
-        # Intentar con conversión de nombre de persona
-        nombre_xml_persona = normalizar_nombre_empresa(convertir_nombre_persona(nombre_xml))
-        nombre_sap_persona = normalizar_nombre_empresa(convertir_nombre_persona(nombre_sap))
-        
-        if nombre_xml_persona == nombre_sap_empresa or nombre_xml_empresa == nombre_sap_persona:
-            return True
-        
-        # Intentar también SAP convertido
-        if nombre_xml_empresa == nombre_sap_persona:
-            return True
-        
-        return False
+        if len(lista_xml) != len(lista_sap):
+            return False
+
+        return sorted(lista_xml) == sorted(lista_sap)
     
     # =========================================================================
     # FUNCIONES DE VALIDACION DE DATOS
@@ -967,9 +899,8 @@ def ZVEN_ValidarComercializados():
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Observaciones',
-            valor_xml=observacion,
-            actualizar_valor_xml=True,
-            val_orden_de_compra=None
+            val_orden_de_compra=None,
+            actualizar_valor_xml=True, valor_xml=observacion
         )
         
         # Actualizar estado
@@ -980,14 +911,6 @@ def ZVEN_ValidarComercializados():
     def procesar_sin_coincidencia_valores(cx, registro, posiciones_maestro, valores_unitario, valores_me, sufijo_contado):
         """
         Procesa cuando NO hay coincidencia de valores entre maestro e histórico.
-        
-        Args:
-            cx: Conexión a BD
-            registro: Registro de Trans_Candidatos_HU41
-            posiciones_maestro: Lista de posiciones del maestro
-            valores_unitario: Lista de valores unitarios del maestro
-            valores_me: Lista de valores ME del maestro
-            sufijo_contado: Sufijo CONTADO si aplica
         """
         registro_id = safe_str(registro.get('ID_dp', ''))
         nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor_dp', ''))
@@ -1059,7 +982,7 @@ def ZVEN_ValidarComercializados():
         
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='ValorPorCalcularPosicion', # Corregido segun lista (ValorPorCalcularPosicion vs Valor PorCalcular_hoc de la posicion). List has "ValorPorCalcularPosicion".
+            nombre_item='ValorPorCalcularPosicion', # Corregido segun lista
             val_orden_de_compra='NO ENCONTRADO',
             valores_comercializados=valores_calc_comercializados,
             actualizar_aprobado=True, valor_aprobado='NO'
@@ -1324,7 +1247,7 @@ def ZVEN_ValidarComercializados():
                         registros_procesados += 1
                         continue
                     
-                    # 9. Validar TRM
+                    # 9. Validar TRM (LOGICA ZPAF: 0.01 tolerancia)
                     print(f"[DEBUG] Validando TRM...")
                     
                     if registro.get('DocumentCurrencyCode_dp') == 'COP':
@@ -1471,7 +1394,7 @@ def ZVEN_ValidarComercializados():
                         
                         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
                     #####################################################
-                    # 11. Validar nombre emisor
+                    # 11. Validar nombre emisor (LOGICA ZPAF)
                     print(f"[DEBUG] Validando nombre emisor...")
                     
                     nombre_emisor_xml = safe_str(registro.get('nombre_emisor_dp', ''))
@@ -1518,7 +1441,7 @@ def ZVEN_ValidarComercializados():
                     
                     # Marcar posiciones como procesadas
                     doc_compra = safe_str(registro.get('DocCompra_hoc', ''))
-                    marcar_posiciones_procesadas(cx, doc_compra, posiciones_maestro)
+                    marcar_posiciones_procesadas(cx, doc_compra, safe_str(registro['Posicion_hoc']))
                     
                     campos_exitoso = {
                         'EstadoFinalFase_4': 'Exitoso',
