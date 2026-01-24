@@ -196,7 +196,7 @@ def HU42_ValidarNotasCreditoDebito():
                     pass
     
     # =========================================================================
-    # FUNCIONES DE VALIDACIÓN ESPECÍFICAS
+    # FUNCIONES DE VALIDACION ESPECÍFICAS
     # =========================================================================
     
     def validar_nombre_receptor(nombre):
@@ -635,7 +635,7 @@ def HU42_ValidarNotasCreditoDebito():
     try:
         print("")
         print("=" * 80)
-        print("[INICIO] Procesamiento HU4.2 - Validación NC y ND")
+        print("[INICIO] Procesamiento HU4.2 - VALIDACION NC y ND")
         print("=" * 80)
         
         t_inicio = time.time()
@@ -1165,7 +1165,7 @@ def HU42_ValidarNotasCreditoDebito():
         
         print("")
         print("=" * 80)
-        print("[FIN] Procesamiento HU4.2 - Validación NC y ND completado")
+        print("[FIN] Procesamiento HU4.2 - VALIDACION NC y ND completado")
         print("=" * 80)
         print("[ESTADISTICAS NC]")
         print(f"  Total procesadas: {nc_procesadas}")
@@ -1181,8 +1181,8 @@ def HU42_ValidarNotasCreditoDebito():
         
         resumen = f"NC: {nc_procesadas} procesadas ({nc_encontradas} encontradas, {nc_con_novedad} con novedad). ND: {nd_procesadas} procesadas ({nd_exitosas} exitosas)"
         
-        SetVar("vLocStrResultadoSP", "True")
-        SetVar("vLocStrResumenSP", resumen)
+        #SetVar("vLocStrResultadoSP", "True")
+        #SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
         print("")
@@ -1193,9 +1193,9 @@ def HU42_ValidarNotasCreditoDebito():
         print(traceback.format_exc())
         print("=" * 80)
         
-        SetVar("vGblStrDetalleError", str(e))
-        SetVar("vGblStrSystemError", traceback.format_exc())
-        SetVar("vLocStrResultadoSP", "False")
+        #SetVar("vGblStrDetalleError", str(e))
+        #SetVar("vGblStrSystemError", traceback.format_exc())
+        #SetVar("vLocStrResultadoSP", "False")
 
 
 # Mock para pruebas locales
@@ -1203,9 +1203,9 @@ if __name__ == "__main__":
     _mock_vars = {}
     def GetVar(name):
         return _mock_vars.get(name, "")
-    def SetVar(name, value):
+    def #SetVar(name, value):
         _mock_vars[name] = value
-        print(f"[SETVAR] {name} = {value}")
+        print(f"[#SetVar] {name} = {value}")
     
     _mock_vars["vLocDicConfig"] = '''{
         "ServidorBaseDatos": "localhost",

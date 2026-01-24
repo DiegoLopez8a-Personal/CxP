@@ -192,8 +192,8 @@ def ZPAF_ValidarActivosFijos():
         if missing:
             raise ValueError(f"Parametros faltantes: {', '.join(missing)}")
 
-        usuario = GetVar("vGblStrUsuarioBaseDatos")
-        contrasena = GetVar("vGblStrClaveBaseDatos")
+        usuario = cfg['UsuarioBaseDatos']
+        contrasena = cfg['ClaveBaseDatos']
         
         # Estrategia de conexion:
         # 1. Intentar con Usuario y Contraseña (para Produccion)
@@ -221,19 +221,20 @@ def ZPAF_ValidarActivosFijos():
         excepcion_final = None
 
         # Intento 1: Autenticacion SQL
-        print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
-        for attempt in range(max_retries):
-            try:
-                cx = pyodbc.connect(conn_str_auth, timeout=30)
-                cx.autocommit = False
-                conectado = True
-                print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
-                break
-            except pyodbc.Error as e:
-                print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
-                excepcion_final = e
-                if attempt < max_retries - 1:
-                    time.sleep(1)
+        ########################
+        # print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
+        # for attempt in range(max_retries):
+        #     try:
+        #         cx = pyodbc.connect(conn_str_auth, timeout=30)
+        #         cx.autocommit = False
+        #         conectado = True
+        #         print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
+        #         break
+        #     except pyodbc.Error as e:
+        #         print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+        #         excepcion_final = e
+        #         if attempt < max_retries - 1:
+        #             time.sleep(1)
 
         # Intento 2: Trusted Connection (si fallo el anterior)
         if not conectado:
@@ -317,102 +318,39 @@ def ZPAF_ValidarActivosFijos():
         
         return nombre_limpio
     
-    def convertir_nombre_persona(nombre_completo):
-        """
-        Convierte el orden del nombre de persona según la HU.
-        
-        XML: Nombres + Apellidos -> SAP: Apellidos + Nombres
-        
-        Ejemplo:
-            'ALEXANDER LOZANO CALDERON' -> 'LOZANO CALDERON ALEXANDER'
-        
-        Args:
-            nombre_completo: Nombre en formato Nombres + Apellidos
-            
-        Returns:
-            str: Nombre en formato Apellidos + Nombres
-        """
-        if pd.isna(nombre_completo) or nombre_completo == "":
-            return ""
-        
-        partes = safe_str(nombre_completo).strip().split()
-        
-        if len(partes) >= 3:
-            # Los últimos 2 son apellidos, el resto son nombres
-            apellidos = partes[-2:]
-            nombres = partes[:-2]
-            return " ".join(apellidos + nombres)
-        
-        return nombre_completo
-    
     def comparar_nombres_proveedor(nombre_xml, nombre_sap):
         """
-        Compara nombres de proveedores aplicando todas las reglas de la HU.
-        
-        Aplica:
-            1. Normalización de empresas (SAS, LTDA, etc.)
-            2. Conversión de orden de nombres de persona
-            3. Comparación case-insensitive sin puntuación
-        
-        Args:
-            nombre_xml: Nombre del XML (DocumentsProcessing)
-            nombre_sap: Nombre del SAP (HistoricoOrdenesCompra)
-            
-        Returns:
-            bool: True si los nombres coinciden
+        Compara nombres de proveedores dividiendo por espacios y verificando 
+        que contengan exactamente las mismas palabras sin importar el orden.
         """
         if pd.isna(nombre_xml) or pd.isna(nombre_sap):
             return False
         
-        # Primero intentar como empresa
-        nombre_xml_empresa = normalizar_nombre_empresa(nombre_xml)
-        nombre_sap_empresa = normalizar_nombre_empresa(nombre_sap)
+        # 1. Normalizar y limpiar los textos (asumo que tu función los deja en minúsculas y sin puntuación)
+        nombre_xml_limpio = normalizar_nombre_empresa(str(nombre_xml))
+        nombre_sap_limpio = normalizar_nombre_empresa(str(nombre_sap))
         
-        if nombre_xml_empresa == nombre_sap_empresa:
-            return True
+        # 2. Dividir por espacios para crear las listas de palabras
+        lista_xml = nombre_xml_limpio.split()
+        lista_sap = nombre_sap_limpio.split()
         
-        # Intentar con conversión de nombre de persona
-        nombre_xml_persona = normalizar_nombre_empresa(convertir_nombre_persona(nombre_xml))
-        nombre_sap_persona = normalizar_nombre_empresa(convertir_nombre_persona(nombre_sap))
-        
-        if nombre_xml_persona == nombre_sap_empresa or nombre_xml_empresa == nombre_sap_persona:
-            return True
-        
-        # Intentar también SAP convertido
-        if nombre_xml_empresa == nombre_sap_persona:
-            return True
-        
-        return False
-    
-    # =========================================================================
-    # FUNCIONES DE VALIDACIÓN DE DATOS
-    # =========================================================================
-    
-    def validar_tolerancia_numerica(valor1, valor2, tolerancia=500):
-        """
-        Valida si dos valores numéricos están dentro del rango de tolerancia.
-        
-        Args:
-            valor1: Primer valor
-            valor2: Segundo valor
-            tolerancia: Diferencia máxima permitida (default: 500)
-            
-        Returns:
-            bool: True si la diferencia es <= tolerancia
-        """
-        try:
-            val1 = normalizar_decimal(valor1)
-            val2 = normalizar_decimal(valor2)
-            return abs(val1 - val2) <= tolerancia
-        except:
+        # 3. Regla 1: La cantidad de items en ambos listados debe ser la misma
+        if len(lista_xml) != len(lista_sap):
             return False
+            
+        # 4. Regla 2: Todos los items deben coincidir sin importar la posición.
+        # Usar sorted() organiza las listas alfabéticamente. 
+        # Si tienen los mismos elementos, las listas ordenadas serán idénticas.
+        return sorted(lista_xml) == sorted(lista_sap)
     
-    def encontrar_combinacion_posiciones(valores_por_calcular, valor_objetivo, tolerancia=500):
+    # =========================================================================
+    # FUNCIONES DE VALIDACION DE DATOS
+    # =========================================================================
+
+    def comparar_suma_total(valores_por_calcular, valor_objetivo, tolerancia=500):
         """
-        Encuentra una combinación de posiciones cuya suma coincida con el valor objetivo.
-        
-        Se prueban todas las combinaciones posibles de las posiciones hasta encontrar
-        una cuya suma esté dentro del rango de tolerancia del valor objetivo.
+        Suma TODOS los valores de la lista y compara si el total coincide 
+        con el valor objetivo dentro de un rango de tolerancia.
         
         Args:
             valores_por_calcular: Lista de tuplas (posicion, valor)
@@ -420,21 +358,22 @@ def ZPAF_ValidarActivosFijos():
             tolerancia: Tolerancia permitida (default: 500)
             
         Returns:
-            tuple: (encontrado, lista_posiciones_usadas, suma_encontrada)
+            tuple: (coincide, lista_todas_posiciones, suma_total)
         """
         valor_objetivo = normalizar_decimal(valor_objetivo)
         
-        if valor_objetivo <= 0:
+        if valor_objetivo <= 0 or not valores_por_calcular:
             return False, [], 0
+            
+        # 1. Sumar TODOS los valores de la lista
+        suma_total = sum(normalizar_decimal(valor) for posicion, valor in valores_por_calcular)
         
-        # Intentar con cada tamaño de combinación (1, 2, 3, ... n)
-        for r in range(1, len(valores_por_calcular) + 1):
-            for combo in combinations(range(len(valores_por_calcular)), r):
-                suma = sum(normalizar_decimal(valores_por_calcular[i][1]) for i in combo)
-                if abs(suma - valor_objetivo) <= tolerancia:
-                    posiciones_usadas = [valores_por_calcular[i][0] for i in combo]
-                    return True, posiciones_usadas, suma
-        
+        # 2. Comparar esa suma total con el objetivo (+/- tolerancia)
+        if abs(suma_total - valor_objetivo) <= tolerancia:
+            # Extraer todas las posiciones, ya que usamos todos los valores
+            todas_las_posiciones = [posicion for posicion, valor in valores_por_calcular]
+            return True, todas_las_posiciones, suma_total
+            
         return False, [], 0
     
     def validar_activo_fijo(valor):
@@ -614,31 +553,12 @@ def ZPAF_ValidarActivosFijos():
             print(f"[ERROR] Error actualizando DocumentsProcessing: {str(e)}")
             raise
     
-    def actualizar_items_comparativa(id_reg, cx, nit, factura, nombre_item, valores_lista,
-                                     actualizar_valor_xml=False, valor_xml=None,
-                                     actualizar_aprobado=False, valor_aprobado=None):
+    def actualizar_items_comparativa(registro, cx, nit, factura, nombre_item,
+                                 actualizar_valor_xml=True, valor_xml=None,
+                                 actualizar_aprobado=True, valor_aprobado=None, 
+                                 actualizar_orden_compra=True, val_orden_de_compra=None):
         """
         Actualiza o inserta items en [dbo].[CxP.Comparativa].
-        
-        Lógica:
-            - Obtiene todos los IDs existentes para el Item dado.
-            - Recorre los valores nuevos 1 a 1.
-            - Si hay ID existente para el índice actual -> UPDATE.
-            - Si NO hay ID existente (nuevos > existentes) -> INSERT.
-            - Si hay más existentes que nuevos (existentes > nuevos) -> Se dejan quietos (sin cambios).
-            - Maneja valores None/Vacíos convirtiéndolos a NULL de base de datos.
-
-        Args:
-            id_reg: ID del registro
-            cx: Conexión a BD
-            nit: NIT del proveedor
-            factura: Número de factura
-            nombre_item: Nombre del item (ej: 'Posicion', 'TRM')
-            valores_lista: Lista de valores para Valor_Orden_de_Compra
-            actualizar_valor_xml: Si actualizar columna Valor_XML
-            valor_xml: Valor para Valor_XML
-            actualizar_aprobado: Si actualizar columna Aprobado
-            valor_aprobado: Valor para Aprobado ('SI', 'NO') o lista de valores
         """
         cur = cx.cursor()
         
@@ -651,70 +571,85 @@ def ZPAF_ValidarActivosFijos():
                 return None
             return s
 
-        # Contar items existentes para saber si hacemos UPDATE o INSERT
-        # Nota: La tabla no tiene PK unica, usamos ROW_NUMBER en CTE para actualizar filas especificas
+        # 1. Contar items existentes
         query_count = """
         SELECT COUNT(*)
         FROM [dbo].[CxP.Comparativa]
         WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
-        cur.execute(query_count, (nit, factura, nombre_item, id_reg))
+        # Se agregó ID_registro para ser precisos con la agrupación
+        cur.execute(query_count, (nit, factura, nombre_item, registro['ID_dp']))
         count_existentes = cur.fetchone()[0]
+
+        # 2. Manejo seguro de los Splits (convirtiendo None a lista vacía)
+        lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
+        lista_xml = valor_xml.split('|') if valor_xml else []
+        lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
+
+        # 3. Obtener el máximo conteo
+        maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
+        count_nuevos = maximo_conteo # Corregido: Ya es un entero, no necesita len()
         
-        count_nuevos = len(valores_lista)
-        
-        # Preparar lista de aprobados
-        if isinstance(valor_aprobado, list):
-            aprobados_lista = valor_aprobado
-        else:
-            aprobados_lista = [valor_aprobado] * count_nuevos
-        
+        maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
+
         # Iterar sobre los valores nuevos para actualizar o insertar
-        for i, valor in enumerate(valores_lista):
-            val_compra = safe_db_val(valor)
-            val_xml = safe_db_val(valor_xml) if actualizar_valor_xml else None
-            val_aprob = safe_db_val(aprobados_lista[i]) if actualizar_aprobado and i < len(aprobados_lista) else None
+        for i in range(maximo_conteo):
+            # Extraer item de forma segura (si no existe índice, es None)
+            item_compra = lista_compra[i] if i < len(lista_compra) else None
+            item_xml = lista_xml[i] if i < len(lista_xml) else None
+            item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
+
+            # Limpiar valores para la BD
+            val_compra = safe_db_val(item_compra)
+            val_xml = safe_db_val(item_xml)
+            val_aprob = safe_db_val(item_aprob)
 
             if i < count_existentes:
-                # UPDATE existente usando CTE y ROW_NUMBER para apuntar a la fila 'i+1'
-                # IMPORTANTE: Al no haber PK, el orden (SELECT NULL) es arbitrario pero estable para el bloque
+                # UPDATE: Construcción dinámica de la consulta
+                set_clauses = []
+                params = []
 
-                update_query = """
+                if actualizar_orden_compra:
+                    set_clauses.append("Valor_Orden_de_Compra = ?")
+                    params.append(val_compra)
+                if actualizar_valor_xml:
+                    set_clauses.append("Valor_XML = ?")
+                    params.append(val_xml)
+                if actualizar_aprobado:
+                    set_clauses.append("Aprobado = ?")
+                    params.append(val_aprob)
+
+                # Si no hay nada que actualizar, continuamos al siguiente ciclo
+                if not set_clauses:
+                    continue
+
+                update_query = f"""
                 WITH CTE AS (
                     SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
-                           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
+                        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
                     FROM [dbo].[CxP.Comparativa]
                     WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
                 )
                 UPDATE CTE
-                SET Valor_Orden_de_Compra = ?
+                SET {", ".join(set_clauses)}
+                WHERE rn = ?
                 """
-                params = [nit, factura, nombre_item, id_reg, val_compra]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(val_xml)
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(val_aprob)
-
-                update_query += " WHERE rn = ?"
-                params.append(i + 1) # ROW_NUMBER empieza en 1
-                
-                cur.execute(update_query, params)
+                # Los parámetros del WHERE van antes del rn
+                final_params = params + [nit, factura, nombre_item, registro['ID_dp'], i + 1]
+                cur.execute(update_query, final_params)
 
             else:
-                # INSERT nuevo (excedente)
+                # INSERT: Corregido el número de parámetros (ahora son 7)
                 insert_query = """
                 INSERT INTO [dbo].[CxP.Comparativa] (
-                    ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
+                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
                     Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, val_compra, val_xml, val_aprob))
+                cur.execute(insert_query, (registro['Fecha_de_retoma_antes_de_contabilizacion_dp'],registro['documenttype_dp'],registro['numero_de_liquidacion_u_orden_de_compra_dp'],registro['nombre_emisor_dp'], registro['ID_dp'], nit, factura, nombre_item, val_compra, val_xml, val_aprob))
         
         cur.close()
-        print(f"[UPDATE] Item '{nombre_item}' procesado - {count_nuevos} valor(es) (Existían: {count_existentes})")
+        print(f"[PROCESADO] Item '{nombre_item}' - {count_nuevos} valor(es) enviados (Existían: {count_existentes})")
     
     def actualizar_estado_comparativa(cx, nit, factura, estado):
         """
@@ -736,30 +671,36 @@ def ZPAF_ValidarActivosFijos():
         cur.close()
         print(f"[UPDATE] Estado comparativa: {estado}")
     
-    def marcar_posiciones_procesadas(cx, doc_compra):
+    def marcar_orden_procesada(cx, oc_numero, posiciones_string):
         """
-        Marca posiciones en Trans_Candidatos_HU41 como PROCESADO.
+        Actualiza la tabla a 'PROCESADO' para una OC específica y sus posiciones.
+        Ejemplo: marcar_orden_procesada(cx, '4300449290', '00010|00020|00030|00040')
+        """
+        cur = cx.cursor()
         
-        Args:
-            cx: Conexión a BD
-            doc_compra: Número de orden de compra
+        # 1. Hacemos el split de las posiciones
+        lista_posiciones = posiciones_string.split('|')
+        
+        # 2. Preparamos el SQL de actualización
+        update_query = """
+        UPDATE [CxP].[HistoricoOrdenesCompra]
+        SET Marca = 'PROCESADO'
+        WHERE DocCompra = ? AND Posicion = ?
         """
-        try:
-            cur = cx.cursor()
+        
+        # 3. Iteramos solo por las posiciones que llegaron y ejecutamos el UPDATE
+        for posicion in lista_posiciones:
+            # Quitamos espacios en blanco por seguridad
+            pos = posicion.strip() 
             
-            update_sql = """
-            UPDATE [CxP].[Trans_Candidatos_HU41]
-            SET Marca_hoc = 'PROCESADO'
-            WHERE DocCompra_hoc = ?
-            """
-            cur.execute(update_sql, (doc_compra,))
-            print(f"[UPDATE] Marcado como PROCESADO - OC {doc_compra}")
-            
-            cur.close()
-            
-        except Exception as e:
-            print(f"[ERROR] Error marcando posiciones: {str(e)}")
-            raise
+            if pos: # Validamos que no esté vacío
+                cur.execute(update_query, (oc_numero, pos))
+                
+        # Guardamos los cambios en la base de datos
+        cx.commit() 
+        cur.close()
+        
+        print(f"✅ OC {oc_numero}: Se marcaron {len(lista_posiciones)} posiciones como 'PROCESADO'.")
     
     # =========================================================================
     # FUNCIONES DE PROCESAMIENTO DE POSICIONES
@@ -868,121 +809,7 @@ def ZPAF_ValidarActivosFijos():
         except Exception as e:
             print(f"[ERROR] Error expandiendo posiciones del historico: {str(e)}")
             return []
-    
-    # =========================================================================
-    # FUNCIONES DE GENERACIÓN DE TRAZABILIDAD
-    # =========================================================================
-    
-    def generar_trazabilidad_exitosa(cx, registro_id, nit, factura, posiciones_usadas, 
-                                     datos_posiciones, valor_xml, valor_sap, es_usd, sufijo_contado):
-        """
-        Genera la trazabilidad en CxP_Comparativa para un registro exitoso.
-        
-        Args:
-            cx: Conexión a BD
-            registro_id: ID del registro
-            nit: NIT del proveedor
-            factura: Número de factura
-            posiciones_usadas: Lista de posiciones que coincidieron
-            datos_posiciones: Lista de diccionarios con datos de posiciones
-            valor_xml: Valor del XML (VlrPagarCop o Valor de la Compra LEA)
-            valor_sap: Suma de valores PorCalcular_hoc de las posiciones usadas
-            es_usd: True si es moneda USD
-            sufijo_contado: Sufijo CONTADO si aplica
-        """
-        n_posiciones = len(posiciones_usadas)
-        
-        # Filtrar solo las posiciones usadas
-        datos_filtrados = [d for d in datos_posiciones if d['Posicion'] in posiciones_usadas]
-        
-        # Campo de valor según moneda
-        if es_usd:
-            nombre_campo_valor = 'VlrPagarCop'
-        else:
-            nombre_campo_valor = 'LineExtensionAmount'
-        
-        # Valor del campo
-        actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
-            nombre_item=nombre_campo_valor,
-            valores_lista=[str(valor_sap)],
-            actualizar_valor_xml=True, valor_xml=str(valor_xml),
-            actualizar_aprobado=True, valor_aprobado='SI'
-        )
-        
-        # Posiciones
-        actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
-            nombre_item='Posicion',
-            valores_lista=[d['Posicion'] for d in datos_filtrados],
-            actualizar_aprobado=True, valor_aprobado='SI'
-        )
-        
-        # Valor PorCalcular_hoc SAP
-        actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
-            nombre_item='Valor PorCalcular_hoc SAP',
-            valores_lista=[str(normalizar_decimal(d['PorCalcular'])) for d in datos_filtrados],
-            actualizar_aprobado=True, valor_aprobado='SI'
-        )
-        
-        # Campos adicionales del histórico
-        # Nota: 'Capitalizado el' y 'Criterio clasif. 2' NO se crean aqui.
-        # Se crean en sus respectivos pasos de validacion especifica.
-        campos_historico = [
-            ('Tipo NIF', 'TipoNif'),
-            ('Acreedor', 'Acreedor'),
-            ('Fec.Doc', 'FecDoc'),
-            ('Fec.Reg', 'FecReg'),
-            ('Fecha. cont gasto', 'FecContGasto'),
-            ('Indicador impuestos', 'IndicadorImpuestos'),
-            ('Texto breve', 'TextoBreve'),
-            ('Clase de impuesto', 'ClaseDeImpuesto'),
-            ('Cuenta', 'Cuenta'),
-            ('Ciudad proveedor', 'CiudadProveedor'),
-            ('DOC.FI.ENTRADA', 'DocFiEntrada'),
-            ('CTA 26', 'Cuenta26'),
-            ('Activo fijo', 'ActivoFijo')
-        ]
-        
-        for nombre_item, campo_historico in campos_historico:
-            actualizar_items_comparativa(
-                id_reg=registro_id, cx=cx, nit=nit, factura=factura,
-                nombre_item=nombre_item,
-                valores_lista=[safe_str(d.get(campo_historico, '')) for d in datos_filtrados],
-                actualizar_aprobado=True, valor_aprobado='SI'
-            )
-    
-    def generar_trazabilidad_sin_coincidencia(cx, registro_id, nit, factura, valor_xml, es_usd, observacion):
-        """
-        Genera la trazabilidad cuando NO hay coincidencia de valores.
-        
-        Args:
-            cx: Conexión a BD
-            registro_id: ID del registro
-            nit: NIT del proveedor
-            factura: Número de factura
-            valor_xml: Valor del XML
-            es_usd: True si es moneda USD
-            observacion: Mensaje de observación
-        """
-        nombre_campo_valor = 'VlrPagarCop' if es_usd else 'LineExtensionAmount'
-        
-        actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
-            nombre_item=nombre_campo_valor,
-            valores_lista=['NO ENCONTRADO'],
-            actualizar_valor_xml=True, valor_xml=str(valor_xml),
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
-        
-        actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
-            nombre_item='Observaciones',
-            valores_lista=[''],
-            actualizar_valor_xml=True, valor_xml=observacion
-        )
-    
+
     # =========================================================================
     # INICIO DEL PROCESAMIENTO PRINCIPAL
     # =========================================================================
@@ -996,7 +823,30 @@ def ZPAF_ValidarActivosFijos():
         t_inicio = time.time()
         
         # 1. Obtener y validar configuración
-        cfg = parse_config(GetVar("vLocDicConfig"))
+        #cfg = parse_config(GetVar("vLocDicConfig"))
+        #############################
+        cfg = {}
+        cfg['ServidorBaseDatos'] = 'localhost\SQLEXPRESS'
+        cfg['NombreBaseDatos'] = 'NotificationsPaddy'
+        cfg['UsuarioBaseDatos'] = 'aa'
+        cfg['ClaveBaseDatos'] = 'aa'
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        # cfg[''] = 
+        
+        
+        #----------------------
         print("[INFO] Configuracion cargada exitosamente")
         
         # Parámetros requeridos (solo BD, no hay archivos maestros)
@@ -1014,7 +864,6 @@ def ZPAF_ValidarActivosFijos():
             query_zpaf = """
                 SELECT * FROM [CxP].[HU41_CandidatosValidacion]
                 WHERE [ClaseDePedido_hoc] IN ('ZPAF', '41')
-                ORDER BY [executionDate_dp] DESC
             """
             
             df_registros = pd.read_sql(query_zpaf, cx)
@@ -1023,8 +872,8 @@ def ZPAF_ValidarActivosFijos():
             
             if len(df_registros) == 0:
                 print("[INFO] No hay registros ZPAF/41 pendientes de procesar")
-                SetVar("vLocStrResultadoSP", "True")
-                SetVar("vLocStrResumenSP", "No hay registros ZPAF/41 pendientes de procesar")
+                #SetVar("vLocStrResultadoSP", "True")
+                #SetVar("vLocStrResumenSP", "No hay registros ZPAF/41 pendientes de procesar")
                 return
             
             # Variables de conteo
@@ -1044,28 +893,11 @@ def ZPAF_ValidarActivosFijos():
                     print(f"\n[PROCESO] Registro {registros_procesados + 1}/{len(df_registros)}: OC {numero_oc}, Factura {numero_factura}")
                     
                     # Determinar sufijo CONTADO según PaymentMeans
-                    sufijo_contado = " CONTADO" if payment_means == "01" else ""
-                    ######################################
+                    sufijo_contado = " CONTADO" if payment_means in ['1', '01'] else ""
+                    
                     # 4. Expandir posiciones del histórico
                     datos_posiciones = expandir_posiciones_historico(registro)
-                    
-                    if not datos_posiciones:
-                        print(f"[WARNING] No se encontraron posiciones en el historico para OC {numero_oc}")
-                        observacion = "No se encuentran posiciones en el historico de ordenes de compra"
-                        resultado_final = f"CON NOVEDAD{sufijo_contado}"
-                        
-                        campos_novedad = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': resultado_final
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        registros_con_novedad += 1
-                        registros_procesados += 1
-                        continue
-                    ##############################################################
+
                     # 5. Determinar si es USD
                     moneda = safe_str(datos_posiciones[0].get('Moneda', '')).upper()
                     es_usd = moneda == 'USD'
@@ -1081,51 +913,119 @@ def ZPAF_ValidarActivosFijos():
                         campo_valor_nombre = 'Valor de la Compra LEA (LineExtensionAmount)'
                     
                     print(f"[DEBUG] Campo valor: {campo_valor_nombre}, Valor XML: {valor_xml}")
-                    #####################################################################
+                    
                     # 7. Preparar valores para búsqueda de combinación
                     valores_por_calcular = [(d['Posicion'], d['PorCalcular']) for d in datos_posiciones]
                     
                     print(f"[DEBUG] Posiciones disponibles: {len(valores_por_calcular)}")
                     
                     # 8. Buscar combinación de posiciones que coincida
-                    coincidencia_encontrada, posiciones_usadas, suma_encontrada = encontrar_combinacion_posiciones(
+                    coincidencia_encontrada, posiciones_usadas, suma_encontrada = comparar_suma_total(
                         valores_por_calcular, valor_xml, tolerancia=500
                     )
                     
                     if not coincidencia_encontrada:
                         print(f"[INFO] No se encuentra coincidencia del valor a pagar para OC {numero_oc}")
-                        observacion = "No se encuentra coincidencia del Valor a pagar de la factura"
-                        resultado_final = f"CON NOVEDAD{sufijo_contado}"
+                        observacion = f"No se encuentra coincidencia del Valor a pagar de la factura, {registro['ObservacionesFase_4_dp']}"
+                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
                         
                         campos_novedad = {
-                            'EstadoFinalFase_4': 'Exitoso',
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': resultado_final
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad)
                         
-                        generar_trazabilidad_sin_coincidencia(
-                            cx, registro_id, nit, numero_factura, valor_xml, es_usd, observacion
-                        )
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='LineExtensionAmount',
+                                                    valor_xml=registro['valor_a_pagar_dp'], valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='Observaciones',
+                                                    valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='VlrPagarCop',
+                                                    valor_xml=registro['VlrPagarCop_dp'], valor_aprobado='NO', val_orden_de_compra='NO ENCONTRADO')
+                        
+                        
                         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
                         
                         registros_con_novedad += 1
                         registros_procesados += 1
                         continue
                     
-                    print(f"[DEBUG] Coincidencia encontrada con posiciones: {posiciones_usadas}, Suma: {suma_encontrada}")
+                    else:
+                        
+                        print(f"[DEBUG] Coincidencia encontrada con posiciones: {posiciones_usadas}, Suma: {suma_encontrada}")
                     
-                    # Filtrar datos de posiciones usadas
-                    datos_posiciones_usadas = [d for d in datos_posiciones if d['Posicion'] in posiciones_usadas]
-                    
-                    # 9. Generar trazabilidad inicial (posiciones y valores)
-                    generar_trazabilidad_exitosa(
-                        cx, registro_id, nit, numero_factura, posiciones_usadas,
-                        datos_posiciones, valor_xml, suma_encontrada, es_usd, sufijo_contado
-                    )
-                    
-                    # Variable para rastrear si hubo alguna novedad
-                    hay_novedad = False
+                        # Filtrar datos de posiciones usadas
+                        datos_posiciones_usadas = [d for d in datos_posiciones if d['Posicion'] in posiciones_usadas]
+
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='LineExtensionAmount',
+                                                    valor_xml=registro['valor_a_pagar_dp'], valor_aprobado=None, val_orden_de_compra=None)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='Posicion',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Posicion_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='ValorPorCalcularSAP',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['PorCalcular_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TipoNIF',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['TipoNif_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='Acreedor',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Acreedor_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='FecDoc',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['FecDoc_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='FecReg',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['FecReg_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='FechaContGasto',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['FecContGasto_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='IndicadorImpuestos',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['IndicadorImpuestos_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TextoBreve',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Texto_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='ClaseImpuesto',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['ClaseDeImpuesto_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='Cuenta',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Cuenta_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='CiudadProveedor',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['CiudadProveedor_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='DocFIEntrada',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['DocFiEntrada_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='CTA26',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Cuenta26_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='ActivoFijo',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['ActivoFijo_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='CapitalizadoEl',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['CapitalizadoEl_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='CriterioClasif2',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['CriterioClasif2_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='LineExtensionAmount',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=None)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        
+                        # Variable para rastrear si hubo alguna novedad
+                        hay_novedad = False
                     
                     # 10. Validar TRM
                     print(f"[DEBUG] Validando TRM...")
@@ -1133,36 +1033,53 @@ def ZPAF_ValidarActivosFijos():
                     trm_xml = normalizar_decimal(registro.get('CalculationRate_dp', 0))
                     trm_sap = normalizar_decimal(datos_posiciones_usadas[0].get('Trm', 0))
                     
-                    # Solo validar TRM si hay valores
-                    if trm_xml > 0 or trm_sap > 0:
-                        trm_coincide = abs(trm_xml - trm_sap) < 0.01
+                    if es_usd:
+                        # Solo validar TRM si hay valores
+                        if trm_xml > 0 or trm_sap > 0:
+                            trm_coincide = abs(trm_xml - trm_sap) < 0.01
+                            
+                            if not trm_coincide:
+                                print(f"[INFO] TRM no coincide: XML {trm_xml} vs SAP {trm_sap}")
+                                resultado_final = f"CON NOVEDAD {sufijo_contado}"
+                                observacion = f"No se encuentra coincidencia en el campo TRM de la factura vs la informacion reportada en SAP, {registro['ObservacionesFase_4_dp']}"
+                                hay_novedad = True
+                                
+                                campos_novedad_trm = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                                    'ObservacionesFase_4': truncar_observacion(observacion),
+                                    'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
+                                }
+                                actualizar_bd_cxp(cx, registro_id, campos_novedad_trm)
+                                
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TRM',
+                                                    valor_xml=registro['CalculationRate_dp'], valor_aprobado=None, val_orden_de_compra=None)
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='Observaciones',
+                                                    valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TRM',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Trm_hoc'])
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TRM',
+                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=None)
+                                actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                                actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
                         
-                        if not trm_coincide:
-                            print(f"[INFO] TRM no coincide: XML {trm_xml} vs SAP {trm_sap}")
-                            observacion = "No se encuentra coincidencia en el campo TRM de la factura vs la informacion reportada en SAP"
-                            hay_novedad = True
-                            
-                            campos_novedad_trm = {
-                                'ObservacionesFase_4': truncar_observacion(observacion),
-                                'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
-                            }
-                            actualizar_bd_cxp(cx, registro_id, campos_novedad_trm)
-                            
-                            actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='TRM',
-                                valores_lista=[str(trm_sap)] * len(posiciones_usadas),
-                                actualizar_valor_xml=True, valor_xml=str(trm_xml),
-                                actualizar_aprobado=True, valor_aprobado='NO'
-                            )
-                        else:
-                            actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='TRM',
-                                valores_lista=[str(trm_sap)] * len(posiciones_usadas),
-                                actualizar_valor_xml=True, valor_xml=str(trm_xml),
-                                actualizar_aprobado=True, valor_aprobado='SI'
-                            )
+                                marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                            else:
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TRM',
+                                                    valor_xml=registro['CalculationRate_dp'], valor_aprobado=None, val_orden_de_compra=None)
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='Observaciones',
+                                                    valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TRM',
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Trm_hoc'])
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                                                    nombre_item='TRM',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=None)
                     
                     # 11. Validar Nombre Emisor
                     print(f"[DEBUG] Validando nombre emisor...")
@@ -1174,135 +1091,158 @@ def ZPAF_ValidarActivosFijos():
                     
                     if not nombres_coinciden:
                         print(f"[INFO] Nombre emisor no coincide: XML '{nombre_emisor_xml}' vs SAP '{nombre_proveedor_sap}'")
-                        observacion = "No se encuentra coincidencia en Nombre Emisor de la factura vs la informacion reportada en SAP"
+                        observacion = f"No se encuentra coincidencia en Nombre Emisor de la factura vs la informacion reportada en SAP, {registro['ObservacionesFase_4_dp']}"
                         hay_novedad = True
+                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
                         
                         campos_novedad_nombre = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_nombre)
                         
-                        actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Nombre emisor',
-                            valores_lista=[nombre_proveedor_sap],
-                            actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
-                            actualizar_aprobado=True, valor_aprobado='NO'
-                        )
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='NombreEmisor',
+                            valor_xml=registro['nombre_emisor_dp'], valor_aprobado='NO', val_orden_de_compra=registro['NProveedor_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Observaciones',
+                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        
                     else:
-                        actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Nombre emisor',
-                            valores_lista=[nombre_proveedor_sap],
-                            actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
-                            actualizar_aprobado=True, valor_aprobado='SI'
-                        )
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='NombreEmisor',
+                            valor_xml=registro['nombre_emisor_dp'], valor_aprobado='SI', val_orden_de_compra=registro['NProveedor_hoc'])
                     
                     # 12. Validar Activo Fijo (9 dígitos)
                     print(f"[DEBUG] Validando Activo fijo...")
                     
                     aprobados_activo_fijo = []
                     activo_fijo_valido = True
+                    listado_activoFijo = registro['ActivoFijo_hoc'].split('|')
                     
-                    for d in datos_posiciones_usadas:
-                        activo_fijo = d.get('ActivoFijo', '')
-                        if validar_activo_fijo(activo_fijo):
-                            aprobados_activo_fijo.append('SI')
-                        else:
-                            aprobados_activo_fijo.append('NO')
+                    for d in listado_activoFijo:
+                        if not validar_activo_fijo(d):
                             activo_fijo_valido = False
                     
                     if not activo_fijo_valido:
                         print(f"[INFO] Activo fijo no valido en alguna posicion")
-                        observacion = 'Pedido corresponde a ZPAF pero campo "Activo fijo" NO se encuentra diligenciado y/o NO corresponde a un dato de 9 digitos'
+                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
+                        observacion = f'Pedido corresponde a ZPAF pero campo "Activo fijo" NO se encuentra diligenciado y/o NO corresponde a un dato de 9 digitos, {registro['ObservacionesFase_4_dp']}'
                         hay_novedad = True
                         
                         campos_novedad_af = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_af)
-                    
-                    actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='Activo fijo',
-                        valores_lista=[safe_str(d.get('ActivoFijo', '')) for d in datos_posiciones_usadas],
-                        actualizar_aprobado=True, valor_aprobado=aprobados_activo_fijo
-                    )
-                    
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='ActivoFijo',
+                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['ActivoFijo_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Observaciones',
+                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='ActivoFijo',
+                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['ActivoFijo_hoc'])
+                        
                     # 13. Validar Capitalizado el (NUNCA debe estar diligenciado)
                     print(f"[DEBUG] Validando Capitalizado el...")
                     
                     aprobados_capitalizado = []
                     capitalizado_valido = True
-                    
-                    for d in datos_posiciones_usadas:
-                        capitalizado = d.get('CapitalizadoEl', '')
-                        if validar_capitalizado_el(capitalizado):
-                            aprobados_capitalizado.append('SI')
-                        else:
-                            aprobados_capitalizado.append('NO')
+                    listado_capitalizado = registro['CapitalizadoEl_hoc'].split('|')
+                    for d in listado_capitalizado:
+                        if not validar_capitalizado_el(d):
                             capitalizado_valido = False
                     
                     if not capitalizado_valido:
                         print(f"[INFO] Capitalizado el esta diligenciado cuando NO deberia")
-                        observacion = 'Pedido corresponde a ZPAF (Activo fijo) pero campo "Capitalizado el" se encuentra diligenciado cuando NUNCA debe estarlo'
+                        observacion = f'Pedido corresponde a ZPAF (Activo fijo) pero campo "Capitalizado el" se encuentra diligenciado cuando NUNCA debe estarlo, {registro["ObservacionesFase_4_dp"]}'
                         hay_novedad = True
+                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
                         
                         campos_novedad_cap = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_cap)
-                    
-                    actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='Capitalizado el',
-                        valores_lista=[safe_str(d.get('CapitalizadoEl', '')) for d in datos_posiciones_usadas],
-                        actualizar_aprobado=True, valor_aprobado=aprobados_capitalizado
-                    )
-                    
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Observaciones',
+                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='CapitalizadoEl',
+                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['CapitalizadoEl_hoc'])
+                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='CapitalizadoEl',
+                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['CapitalizadoEl_hoc'])
+                        
                     # 14. Validar Indicador impuestos
                     print(f"[DEBUG] Validando Indicador impuestos...")
                     
-                    indicadores = [d.get('IndicadorImpuestos', '') for d in datos_posiciones_usadas]
-                    indicador_valido, msg_indicador, grupo_indicador = validar_indicador_impuestos(indicadores)
+                    listado_indicador = registro['IndicadorImpuestos_hoc'].split('|')
+                    indicador_valido, msg_indicador, grupo_indicador = validar_indicador_impuestos(listado_indicador)
                     
                     aprobados_indicador = []
                     if not indicador_valido:
                         print(f"[INFO] Indicador impuestos no valido: {msg_indicador}")
-                        observacion = f'Pedido corresponde a ZPAF pero campo "Indicador impuestos" {msg_indicador}'
+                        observacion = f'Pedido corresponde a ZPAF pero campo "Indicador impuestos" {msg_indicador} , {registro['ObservacionesFase_4_dp']}'
                         hay_novedad = True
                         
                         campos_novedad_ind = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_ind)
                         
-                        # Marcar todas como NO si hay error de grupo
-                        aprobados_indicador = ['NO'] * len(datos_posiciones_usadas)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Observaciones',
+                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='IndicadorImpuestos',
+                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['IndicadorImpuestos_hoc'])
+                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
                     else:
-                        aprobados_indicador = ['SI'] * len(datos_posiciones_usadas)
-                    
-                    actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='Indicador impuestos',
-                        valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
-                        actualizar_aprobado=True, valor_aprobado=aprobados_indicador
-                    )
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='IndicadorImpuestos',
+                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['IndicadorImpuestos_hoc'])
                     
                     # 15. Validar Criterio clasif. 2
                     print(f"[DEBUG] Validando Criterio clasif. 2...")
                     
                     aprobados_criterio = []
                     criterio_valido = True
+                    listado_indicador = registro['IndicadorImpuestos_hoc'].split('|')
+                    listado_clasif2 = registro['CriterioClasif2_hoc'].split('|')
                     
-                    for d in datos_posiciones_usadas:
-                        indicador = d.get('IndicadorImpuestos', '')
-                        criterio = d.get('CriterioClasif2', '')
-                        es_valido_crit, msg_crit = validar_criterio_clasif_2(indicador, criterio)
+                    for indicador, criterio in zip(listado_indicador, listado_clasif2):
+    
+                        # Es buena práctica hacer .strip() por si quedaron espacios al hacer el split
+                        es_valido_crit, msg_crit = validar_criterio_clasif_2(indicador.strip(), criterio.strip())
                         
                         if es_valido_crit:
                             aprobados_criterio.append('SI')
@@ -1315,71 +1255,89 @@ def ZPAF_ValidarActivosFijos():
                         # Determinar mensaje según el error
                         criterios = [d.get('CriterioClasif2', '') for d in datos_posiciones_usadas]
                         if all(not safe_str(c) for c in criterios):
-                            observacion = 'Pedido corresponde a ZPAF pero campo "Criterio clasif." 2 NO se encuentra diligenciado'
+                            observacion = f'Pedido corresponde a ZPAF pero campo "Criterio clasif." 2 NO se encuentra diligenciado, {registro['ObservacionesFase_4_dp']}'
                         else:
-                            observacion = 'Pedido corresponde a ZPAF pero campo "Criterio clasif." 2 NO se encuentra aplicado correctamente segun reglas "H4 y H5 = 0001", "H6 y H7 = 0000" o "VP = 0001 o 0000"'
+                            observacion = f'Pedido corresponde a ZPAF pero campo "Criterio clasif." 2 NO se encuentra aplicado correctamente segun reglas "H4 y H5 = 0001", "H6 y H7 = 0000" o "VP = 0001 o 0000", {registro['ObservacionesFase_4_dp']}'
                         hay_novedad = True
                         
                         campos_novedad_crit = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
+                            'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_crit)
-                    
-                    actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='Criterio clasif. 2',
-                        valores_lista=[safe_str(d.get('CriterioClasif2', '')) for d in datos_posiciones_usadas],
-                        actualizar_aprobado=True, valor_aprobado=aprobados_criterio
-                    )
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='CriterioClasif2',
+                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['CriterioClasif2_hoc'])
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Observaciones',
+                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='CriterioClasif2',
+                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['CriterioClasif2_hoc'])
                     
                     # 16. Validar Cuenta (debe ser 2695950020)
                     print(f"[DEBUG] Validando Cuenta...")
                     
                     aprobados_cuenta = []
                     cuenta_valida = True
+                    listado_cuenta = registro['Cuenta_hoc'].split('|')
                     
-                    for d in datos_posiciones_usadas:
-                        cuenta = d.get('Cuenta', '')
-                        if validar_cuenta_zpaf(cuenta):
-                            aprobados_cuenta.append('SI')
-                        else:
-                            aprobados_cuenta.append('NO')
+                    for d in listado_cuenta:
+                        if not validar_cuenta_zpaf(d):
                             cuenta_valida = False
                     
                     if not cuenta_valida:
                         print(f"[INFO] Cuenta no es igual a 2695950020")
-                        observacion = 'Pedido corresponde a ZPAF, pero Campo "Cuenta" NO corresponde a 2695950020'
+                        observacion = f'Pedido corresponde a ZPAF, pero Campo "Cuenta" NO corresponde a 2695950020, {registro['ObservacionesFase_4_dp']}'
                         hay_novedad = True
                         
                         campos_novedad_cuenta = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Cuenta',
+                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['Cuenta_hoc'])
+                        
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Observaciones',
+                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
+                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
+                            nombre_item='Cuenta',
+                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['Cuenta_hoc'])
                     
-                    actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='Cuenta',
-                        valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
-                        actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
-                    )
                     
                     # 17. Finalizar registro
                     if hay_novedad:
-                        actualizar_estado_comparativa(cx, nit, numero_factura, f"CON NOVEDAD{sufijo_contado}")
+                        actualizar_estado_comparativa(cx, nit, numero_factura, f"CON NOVEDAD {sufijo_contado}")
                         registros_con_novedad += 1
                     else:
                         # Marcar como PROCESADO
                         doc_compra = safe_str(registro.get('DocCompra_hoc', ''))
-                        marcar_posiciones_procesadas(cx, doc_compra)
+                        
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
                         
                         campos_exitoso = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ResultadoFinalAntesEventos': f"PROCESADO{sufijo_contado}"
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                            'ResultadoFinalAntesEventos': f"PROCESADO {sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_exitoso)
-                        actualizar_estado_comparativa(cx, nit, numero_factura, f"PROCESADO{sufijo_contado}")
                         
                         print(f"[SUCCESS] Registro {registro_id} procesado exitosamente")
                         registros_exitosos += 1
@@ -1390,16 +1348,8 @@ def ZPAF_ValidarActivosFijos():
                     print(f"[ERROR] Error procesando registro {idx}: {str(e)}")
                     print(traceback.format_exc())
                     
-                    try:
-                        registro_id = safe_str(registro.get('ID_dp', ''))
-                        campos_error = {
-                            'EstadoFinalFase_4': 'Error',
-                            'ObservacionesFase_4': f"Error en procesamiento: {str(e)[:500]}",
-                            'ResultadoFinalAntesEventos': 'ERROR TECNICO'
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_error)
-                    except:
-                        pass
+                    # SetVar("vGblStrDetalleError", traceback.format_exc())
+                    # SetVar("vGblStrSystemError", "ErrorHU4_4.1")
                     
                     registros_con_novedad += 1
                     registros_procesados += 1
@@ -1421,8 +1371,8 @@ def ZPAF_ValidarActivosFijos():
         
         resumen = f"Procesados {registros_procesados} registros ZPAF/41. Exitosos: {registros_exitosos}, Con novedad: {registros_con_novedad}"
         
-        SetVar("vLocStrResultadoSP", "True")
-        SetVar("vLocStrResumenSP", resumen)
+        # SetVar("vLocStrResultadoSP", "True")
+        # SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
         exc_type = type(e).__name__
@@ -1436,7 +1386,10 @@ def ZPAF_ValidarActivosFijos():
         print(traceback.format_exc())
         print("=" * 80)
         
-        SetVar("vGblStrDetalleError", traceback.format_exc())
-        SetVar("vGblStrSystemError", "ErrorHU4_4.1")
-        SetVar("vLocStrResultadoSP", "False")
+        #SetVar("vGblStrDetalleError", traceback.format_exc())
+        #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
+        #SetVar("vLocStrResultadoSP", "False")
 
+
+
+ZPAF_ValidarActivosFijos()

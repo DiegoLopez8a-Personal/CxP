@@ -5,7 +5,7 @@ Archivo que contiene el contexto de lo que se muestra en las Historias de usuari
 
 - Al momento de generar los registros en la tabla [dbo].[CxP.Comparativa] se deben verificar cuantos Itemsa con la misma descripcion ya se encuentran creados, por ejemplo si se identifican que hay 4 pocisiones y ya se encuentran 2 Items creados para "Clase de Impuesto" (por ejemplo), entonces solo sera necesario crear 2 mas y agregar los valores dentro de las columnas que se indican.
 
-- Tener en cuenta que, en CADA VALIDACIÓN cuyo resultado sea "CON
+- Tener en cuenta que, en CADA VALIDACION cuyo resultado sea "CON
 NOVEDAD" se deberá validar si el campo "forma_de_pago_dp" es igual a 01 o 1 y
 adicionar la palabra CONTADO en caso de que, SI SEA IGUAL, ejemplo "CON
 NOVEDAD CONTADO". Si NO es igual a 01 o 1 seria CON NOVEDAD
@@ -20,7 +20,7 @@ La idea es que revisemos el script que esta realizado en python y en caso de req
 1. Si corresponde a ZPAF:
 i. Nota:
 1. Actualmente corresponde a OC 41 = Pedido Activos Fijos.
-2. Tener en cuenta que, en CADA VALIDACIÓN cuyo resultado sea "CON
+2. Tener en cuenta que, en CADA VALIDACION cuyo resultado sea "CON
 NOVEDAD" se deberá validar si el campo "PaymentMeans" es igual a 01 y
 adicionar la palabra CONTADO en caso de que, SI SEA IGUAL, ejemplo "CON
 NOVEDAD CONTADO". Si NO es igual a 01, deja la marca como se indica en
@@ -127,14 +127,14 @@ COMPRA
 d. COLUMNA APROBADO:
 i. Línea de Item "VlrPagarCop": se diligencia con la
 marca igual a SI.
-3. Se deberá continuar con la siguiente validación.
+3. Se deberá continuar con la siguiente VALIDACION.
 ii. Si NO se encuentra COINCIDENCIA de VlrPagarCop exitosamente: 
 12/1/26, 2:07 p.m. CXP Epic P Backlog - Boards
 https://dev.azure.com/Gerencia2NV/Grupo Diana/_backlogs/backlog/CXP/Epic P?workitem=42748 2/19
 1. Se deberá marcar registro en BD CXP como:
-a. Estado Fase 4 - VALIDACIÓN DATOS DE
+a. Estado Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN: Exitoso.
-b. Observaciones Fase 4 - VALIDACIÓN DATOS DE
+b. Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN: Diligenciar "No se encuentra coincidencia
 del Valor a pagar de la factura", conservando las
 observaciones previas que cuente el campo, separando por
@@ -148,7 +148,7 @@ en BD CXP.
 ii. Línea de Item "VlrPagarCop": se diligencia con el dato
 del campo VlrPagarCop que se encuentra en BD CXP.
 iii. Línea de Item "Observaciones": se diligencia con el
-dato del campo Observaciones Fase 4 - VALIDACIÓN
+dato del campo Observaciones Fase 4 - VALIDACION
 DATOS DE FACTURACIÓN que se encuentra en BD
 CXP, ejemplo: No se encuentra coincidencia del
 Valor a pagar de la factura.
@@ -297,15 +297,15 @@ COMPRA
 iv. COLUMNA APROBADO:
 1. Línea de Item "VlrPagarCop": se diligencia con
 la marca igual a SI.
-3. Se deberá continuar con la siguiente validación.
+3. Se deberá continuar con la siguiente VALIDACION.
 12/1/26, 2:07 p.m. CXP Epic P Backlog - Boards
 https://dev.azure.com/Gerencia2NV/Grupo Diana/_backlogs/backlog/CXP/Epic P?workitem=42748 5/19
 2. Si NO se encuentra
 COINCIDENCIA de VlrPagarCop exitosamente: 
 a. Se deberá marcar registro en BD CXP como:
-i. Estado Fase 4 - VALIDACIÓN DATOS DE
+i. Estado Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN: Exitoso.
-ii. Observaciones Fase 4 - VALIDACIÓN DATOS DE
+ii. Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN: Diligenciar "No se encuentra
 coincidencia del Valor a pagar de la
 factura", conservando las observaciones previas que
@@ -324,7 +324,7 @@ el dato del campo VlrPagarCop que se
 encuentra en BD CXP.
 3. Línea de Item "Observaciones": se diligencia
 con el dato del campo Observaciones Fase 4 -
-VALIDACIÓN DATOS DE FACTURACIÓN que se
+VALIDACION DATOS DE FACTURACIÓN que se
 encuentra en BD CXP, ejemplo: No se
 encuentra coincidencia del Valor a pagar de
 la factura.
@@ -440,11 +440,11 @@ el HISTÓRICO DE ÓRDENES DE COMPRA
 iv. COLUMNA APROBADO:
 1. Línea de Item "LineExtensionAmount": se diligencia con la marca
 igual a SI.
-c. Se deberá continuar con la siguiente validación.
+c. Se deberá continuar con la siguiente VALIDACION.
 2. Si NO se encuentra COINCIDENCIA de Valor a Pagar exitosamente: 
 1. Se deberá marcar registro en BD CXP como:
-a. Estado Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN: Exitoso.
-b. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN:
+a. Estado Fase 4 - VALIDACION DATOS DE FACTURACIÓN: Exitoso.
+b. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN:
 Diligenciar "No se encuentra coincidencia del Valor a pagar de la
 factura", conservando las observaciones previas que cuente el campo,
 separando por comas, pero primando la última observación que se realiza.
@@ -455,7 +455,7 @@ i. Línea de Item "LineExtensionAmount": se diligencia con el dato
 del campo Valor a Pagar que se encuentra en BD CXP,
 ejemplo: 18871381. Si ya existe omitir.
 ii. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP, ejemplo: No se
 encuentra coincidencia del Valor a pagar de la factura.
 b. COLUMNA VALOR ORDEN DE COMPRA:
@@ -595,11 +595,11 @@ encontradas en el HISTÓRICO DE ÓRDENES DE COMPRA
 iv. COLUMNA APROBADO:
 1. Línea de Item "LineExtensionAmount": se diligencia con la
 marca igual a SI.
-c. Se deberá continuar con la siguiente validación.
+c. Se deberá continuar con la siguiente VALIDACION.
 2. Si NO se encuentra COINCIDENCIA de Valor a Pagar exitosamente:
 a. Se deberá marcar registro en BD CXP como:
-1. Estado Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN: Exitoso.
-2. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN:
+1. Estado Fase 4 - VALIDACION DATOS DE FACTURACIÓN: Exitoso.
+2. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN:
 Diligenciar "No se encuentra coincidencia del Valor a pagar de
 la factura", conservando las observaciones previas que cuente el
 campo, separando por comas, pero primando la última observación
@@ -611,7 +611,7 @@ i. Línea de Item "LineExtensionAmount": se diligencia con
 el dato del campo Valor a Pagar que se encuentra en BD
 CXP, ejemplo: 18871381. Si ya existe omitir.
 ii. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP, ejemplo: No se
 encuentra coincidencia del Valor a pagar de la factura.
 2. COLUMNA VALOR ORDEN DE COMPRA:
@@ -633,7 +633,7 @@ c. Validar el valor del campo TRM de la primera posición del HISTORICO DE ORDEN
 COMPRA vs el campo “CalculationRate” del registro en la BD CXP.
 i. Si los valores validados NO COINCIDEN:
 1. Se deberá marcar registro en BD CXP como:
-a. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN: Diligenciar "No
+a. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN: Diligenciar "No
 se encuentra coincidencia en el campo TRM de la factura vs la información
 reportada en SAP", conservando las observaciones previas que cuente el
 campo, separando por comas, pero primando la última observación que se
@@ -647,7 +647,7 @@ b. COLUMNA VALOR XML:
 i. La o las líneas de item "TRM": se diligencia con el dato del
 campo CalculationRate que se encuentra en BD CXP.
 ii. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 c. COLUMNA VALOR ORDEN DE COMPRA:
 i. La o las líneas de item "TRM": se diligencia con el dato del
@@ -658,7 +658,7 @@ i. La o las líneas de item "TRM": se diligencia con la marca igual a NO.
 e. COLUMNA ESTADO:
 i. se diligencia con el dato del campo Resultado Final registro antes de
 Eventos que se encuentra en BD CXP, ejemplo: CON NOVEDAD.
-3. Se deberá continuar con la siguiente validación.
+3. Se deberá continuar con la siguiente VALIDACION.
 ii. Si los valores validados COINCIDEN:
 1. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 a. COLUMNA ITEM:
@@ -672,7 +672,7 @@ i. La o las líneas de item "TRM": se diligencia con el dato del
 campo TRM que se encuentra en BD CXP.
 d. COLUMNA APROBADO:
 i. La o las líneas de item "TRM": se diligencia con la marca igual a SI.
-2. Se deberá continuar con la siguiente validación.
+2. Se deberá continuar con la siguiente VALIDACION.
 12/1/26, 2:07 p.m. CXP Epic P Backlog - Boards
 https://dev.azure.com/Gerencia2NV/Grupo Diana/_backlogs/backlog/CXP/Epic P?workitem=42748 13/19
 d. Hallar coincidencia del valor del campo "Nombre Emisor" del registro en BD CXP que está
@@ -734,7 +734,7 @@ https://dev.azure.com/Gerencia2NV/Grupo Diana/_backlogs/backlog/CXP/Epic P?worki
 i. Si NO SE ENCUENTRA COINCIDENCIA en la comparación de los datos después de aplicadas
 las reglas de variación:
 a. Se deberá marcar registro en BD CXP como:
-1. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN: Diligenciar "No
+1. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN: Diligenciar "No
 se encuentra coincidencia en Nombre Emisor de la factura vs la
 información reportada en SAP", conservando las observaciones previas que
 cuente el campo, separando por comas, pero primando la última observación
@@ -746,7 +746,7 @@ b. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 campo Nombre emisor que se encuentra en BD CXP, ejemplo: DIANA A S
 A S. Si ya existe omitir.
 2. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 2. COLUMNA VALOR ORDEN DE COMPRA:
 1. Línea de Item "Nombre emisor": se diligencia con el dato del campo N.
@@ -756,7 +756,7 @@ Proveedor que se encuentra en HISTORICO DE ORDENES DE COMPRA.
 4. COLUMNA ESTADO:
 1. se diligencia con el dato del campo Resultado Final registro antes de
 Eventos que se encuentra en BD CXP, ejemplo: CON NOVEDAD.
-c. Continuar con la siguiente validación.
+c. Continuar con la siguiente VALIDACION.
 ii. Si SE ENCUENTRA COINCIDENCIA en la comparación de los datos después de aplicadas las
 reglas de variación:
 1. Generar trazabilidad en tabla comparativa, de la siguiente manera:
@@ -769,7 +769,7 @@ A S. Si ya existe omitir.
 Proveedor que se encuentra en HISTORICO DE ORDENES DE COMPRA.
 3. COLUMNA APROBADO:
 1. Línea de Item "Nombre emisor": se diligencia con la marca igual a SI.
-2. Continuar con la siguiente validación.
+2. Continuar con la siguiente VALIDACION.
 e. Validar el cumplimiento de las siguientes reglas de negocio en la información obtenida del
 HISTÓRICO DE ORDENES DE COMPRA para el registro FV que se está procesando por cada
 posición encontrada.
@@ -781,10 +781,10 @@ a. Si se encuentra diligenciado y corresponde a un dato de 9 dígitos:
 1. Línea de Item "Activo fijo": se diligencia con la marca igual a SI en
 la o las posiciones encontradas en el HISTÓRICO DE ÓRDENES DE
 COMPRA.
-2. Continuar con la siguiente validación.
+2. Continuar con la siguiente VALIDACION.
 b. Si NO se encuentra diligenciado y/o NO corresponde a un dato de 9 dígitos:
 1. Se deberá marcar registro en BD CXP como:
-1. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN:
+1. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN:
 Diligenciar "Pedido corresponde a ZPAF pero campo "Activo
 12/1/26, 2:07 p.m. CXP Epic P Backlog - Boards
 https://dev.azure.com/Gerencia2NV/Grupo Diana/_backlogs/backlog/CXP/Epic P?workitem=42748 15/19
@@ -795,7 +795,7 @@ separando por comas, pero primando la última observación que se realiza.
 2. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 1. COLUMNA VALOR XML:
 1. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 2. COLUMNA APROBADO:
 1. Línea de Item "Activo fijo": se diligencia con la marca igual
@@ -805,7 +805,7 @@ cumplido (si aplica).
 3. COLUMNA ESTADO:
 1. se diligencia con el dato del campo Resultado Final registro antes
 de Eventos que se encuentra en BD CXP, ejemplo: CON NOVEDAD.
-3. Continuar con la siguiente validación.
+3. Continuar con la siguiente VALIDACION.
 ii. Campo Capitalizado el: Este dato NUNCA debe estar diligenciado.
 a. Si NO se encuentra diligenciado:
 i. Generar trazabilidad en tabla comparativa, de la siguiente manera:
@@ -813,10 +813,10 @@ i. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 a. Línea de Item "Capitalizado el": se diligencia con la marca igual
 a SI en la o las posiciones encontradas en el HISTÓRICO DE
 ÓRDENES DE COMPRA.
-ii. Continuar con la siguiente validación.
+ii. Continuar con la siguiente VALIDACION.
 b. Si se encuentra diligenciado:
 i. Se deberá marcar registro en BD CXP como:
-1. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN:
+1. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN:
 Diligenciar "Pedido corresponde a ZPAF (Activo fijo) pero
 campo "Capitalizado el" se encuentra diligenciado cuando NUNCA debe
 estarlo", conservando las observaciones previas que cuente el campo,
@@ -825,7 +825,7 @@ separando por comas, pero primando la última observación que se realiza.
 ii. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 1. COLUMNA VALOR XML:
 a. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 2. COLUMNA APROBADO:
 a. Línea de Item "Capitalizado el": se diligencia con la marca igual a
@@ -835,7 +835,7 @@ cumplido (si aplica).
 3. COLUMNA ESTADO:
 a. se diligencia con el dato del campo Resultado Final registro antes
 de Eventos que se encuentra en BD CXP, ejemplo: CON NOVEDAD.
-iii. Continuar con la siguiente validación.
+iii. Continuar con la siguiente VALIDACION.
 iii. Campo Indicador impuestos: Este dato debe estar diligenciado con uno de los
 indicadores "H4", "H5", "H6", "H7" o "VP" por posición encontrada para el registro FV. En los
 casos donde exista más de una posición asociada al registro, los valores del campo pueden
@@ -865,11 +865,11 @@ i. COLUMNA APROBADO:
 1. Línea de Item "Indicador impuestos": se diligencia con la marca
 igual a SI en la o las posiciones encontradas en el HISTÓRICO DE
 ÓRDENES DE COMPRA.
-ii. Continuar con la siguiente validación.
+ii. Continuar con la siguiente VALIDACION.
 2. Si NO se encuentra diligenciado y/o dato diligenciado NO corresponde a las
 combinaciones permitidas según cada escenario detallado previamente:
 a. Se deberá marcar registro en BD CXP como:
-i. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN: Diligenciar
+i. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN: Diligenciar
 las siguientes observaciones que apliquen según el caso, conservando las
 observaciones previas que cuente el campo, separando por comas, pero
 primando la última observación que se realiza:
@@ -884,7 +884,7 @@ ii. Resultado Final registro antes de Eventos: CON NOVEDAD.
 b. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 i. COLUMNA VALOR XML:
 1. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 ii. COLUMNA APROBADO:
 1. Línea de Item "Indicador impuestos": se diligencia con la marca
@@ -894,7 +894,7 @@ cumplido (si aplica).
 iii. COLUMNA ESTADO:
 1. se diligencia con el dato del campo Resultado Final registro antes
 de Eventos que se encuentra en BD CXP, ejemplo: CON NOVEDAD.
-c. Continuar con la siguiente validación.
+c. Continuar con la siguiente VALIDACION.
 3. Campo Criterio clasif. 2: Este campo debe estar diligenciado con un solo valor por
 cada posición encontrada del registro tipo FV de acuerdo con los valores presentes en
 el campo Indicador impuestos, aplicando las siguientes reglas:
@@ -912,11 +912,11 @@ i. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 1. Línea de Item "Criterio clasif. 2": se diligencia con la marca
 igual a SI en la o las posiciones encontradas en el HISTÓRICO
 DE ÓRDENES DE COMPRA.
-ii. Continuar con la siguiente validación.
+ii. Continuar con la siguiente VALIDACION.
 b. Si NO se encuentra diligenciado y/o dato diligenciado NO corresponde a las
 reglas indicadas:
 i. Se deberá marcar registro en BD CXP como:
-1. Observaciones Fase 4 - VALIDACIÓN DATOS DE
+1. Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN: Diligenciar las siguientes observaciones que
 apliquen según el caso, conservando las observaciones previas que
 cuente el campo, separando por comas, pero primando la última
@@ -930,7 +930,7 @@ y H5 = 0001", "H6 y H7 = 0000"o "VP = 0001 o 0000""
 ii. Generar trazabilidad en tabla comparativa, de la siguiente manera:
 1. COLUMNA VALOR XML:
 a. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 2. COLUMNA APROBADO:
 1. Línea de Item "Criterio clasif. 2": se diligencia con la marca
@@ -941,7 +941,7 @@ regla y SI en las que si haya cumplido (si aplica).
 1. se diligencia con el dato del campo Resultado Final registro
 antes de Eventos que se encuentra en BD CXP,
 ejemplo: CON NOVEDAD.
-iii. Continuar con la siguiente validación.
+iii. Continuar con la siguiente VALIDACION.
 4. Campo Cuenta: debe estar diligenciado y el dato debe ser "2695950020", en todas las
 posiciones encontradas en el HISTÓRICO DE ÓRDENES DE COMPRA.
 a. Si cuenta es igual:
@@ -958,7 +958,7 @@ b. Si cuenta NO es igual:
 i. Se deberá marcar registro en BD CXP como:
 12/1/26, 2:07 p.m. CXP Epic P Backlog - Boards
 https://dev.azure.com/Gerencia2NV/Grupo Diana/_backlogs/backlog/CXP/Epic P?workitem=42748 18/19
-1. Observaciones Fase 4 - VALIDACIÓN DATOS DE FACTURACIÓN:
+1. Observaciones Fase 4 - VALIDACION DATOS DE FACTURACIÓN:
 Diligenciar "Pedido corresponde a ZPAF, pero Campo "Cuenta" NO
 corresponde a 2695950020", conservando las observaciones previas
 que cuente el campo, separando por comas, pero primando la
@@ -967,7 +967,7 @@ que cuente el campo, separando por comas, pero primando la
 ii. Generar trazabilidad en tabla comparativa, de la siguiente manera: 
 1. COLUMNA VALOR XML:
 1. Línea de Item "Observaciones": se diligencia con el dato del
-campo Observaciones Fase 4 - VALIDACIÓN DATOS DE
+campo Observaciones Fase 4 - VALIDACION DATOS DE
 FACTURACIÓN que se encuentra en BD CXP.
 2. COLUMNA APROBADO:
 a. Línea de Item "Cuenta": se diligencia con la marca igual

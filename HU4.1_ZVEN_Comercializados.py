@@ -233,7 +233,7 @@ def ZVEN_ValidarComercializados():
                     pass
     
     # =========================================================================
-    # FUNCIONES DE VALIDACIÓN DE ARCHIVOS MAESTROS
+    # FUNCIONES DE VALIDACION DE ARCHIVOS MAESTROS
     # =========================================================================
     
     def validar_archivo_maestro_comercializados(ruta_archivo):
@@ -471,7 +471,7 @@ def ZVEN_ValidarComercializados():
         return False
     
     # =========================================================================
-    # FUNCIONES DE VALIDACIÓN DE DATOS
+    # FUNCIONES DE VALIDACION DE DATOS
     # =========================================================================
     
     def validar_tolerancia_numerica(valor1, valor2, tolerancia=500):
@@ -950,7 +950,7 @@ def ZVEN_ValidarComercializados():
         
         # Actualizar CxP_Comparativa - Observaciones
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Observaciones',
             valores_lista=[observacion],
             actualizar_valor_xml=True, valor_xml=observacion
@@ -992,7 +992,7 @@ def ZVEN_ValidarComercializados():
         # Actualizar items en comparativa
         # LineExtensionAmount
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='LineExtensionAmount',
             valores_lista=['NO ENCONTRADO'],
             actualizar_valor_xml=True, valor_xml=str(valor_a_pagar),
@@ -1001,7 +1001,7 @@ def ZVEN_ValidarComercializados():
         
         # VlrPagarCop
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='VlrPagarCop',
             valores_lista=['NO ENCONTRADO'],
             actualizar_valor_xml=True, valor_xml=str(vlr_pagar_cop),
@@ -1010,7 +1010,7 @@ def ZVEN_ValidarComercializados():
         
         # Observaciones
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Observaciones',
             valores_lista=[''],
             actualizar_valor_xml=True, valor_xml=observacion
@@ -1018,7 +1018,7 @@ def ZVEN_ValidarComercializados():
         
         # Nombre emisor
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Nombre emisor',
             valores_lista=['NO ENCONTRADO'],
             actualizar_aprobado=True, valor_aprobado='NO'
@@ -1026,7 +1026,7 @@ def ZVEN_ValidarComercializados():
         
         # Posiciones
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Posicion',
             valores_lista=['NO ENCONTRADO'] * len(posiciones_maestro),
             valores_comercializados=[str(p) for p in posiciones_maestro],
@@ -1042,7 +1042,7 @@ def ZVEN_ValidarComercializados():
                 valores_calc_comercializados.append(str(valores_unitario[i]))
         
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Valor PorCalcular_hoc de la posicion',
             valores_lista=['NO ENCONTRADO'] * len(posiciones_maestro),
             valores_comercializados=valores_calc_comercializados,
@@ -1051,14 +1051,14 @@ def ZVEN_ValidarComercializados():
         
         # Fec.Doc y Fec.Reg
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Fec.Doc',
             valores_lista=['NO ENCONTRADO'] * len(posiciones_maestro),
             actualizar_aprobado=True, valor_aprobado='NO'
         )
         
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+            registro=registro, cx=cx, nit=nit, factura=numero_factura,
             nombre_item='Fec.Reg',
             valores_lista=['NO ENCONTRADO'] * len(posiciones_maestro),
             actualizar_aprobado=True, valor_aprobado='NO'
@@ -1128,8 +1128,8 @@ def ZVEN_ValidarComercializados():
             
             if len(df_registros) == 0:
                 print("[INFO] No hay registros ZVEN/50 pendientes de procesar")
-                SetVar("vLocStrResultadoSP", "True")
-                SetVar("vLocStrResumenSP", "No hay registros ZVEN/50 pendientes de procesar")
+                #SetVar("vLocStrResultadoSP", "True")
+                #SetVar("vLocStrResumenSP", "No hay registros ZVEN/50 pendientes de procesar")
                 return
             
             # Variables de conteo
@@ -1277,7 +1277,7 @@ def ZVEN_ValidarComercializados():
                         
                         # Actualizar comparativa con valores
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='LineExtensionAmount',
                             valores_lista=[str(suma_valores_unitario)],
                             valores_comercializados=[str(suma_valores_unitario)],
@@ -1287,7 +1287,7 @@ def ZVEN_ValidarComercializados():
                         
                         if any(v > 0 for v in valores_me):
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='VlrPagarCop',
                                 valores_lista=[str(suma_valores_me)],
                                 valores_comercializados=[str(suma_valores_me)],
@@ -1296,7 +1296,7 @@ def ZVEN_ValidarComercializados():
                             )
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Observaciones',
                             valores_lista=[''],
                             actualizar_valor_xml=True, valor_xml=observacion
@@ -1338,7 +1338,7 @@ def ZVEN_ValidarComercializados():
                             
                             # Actualizar TRM en comparativa
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
                                 valores_lista=[str(trm_sap)] * len(posiciones_maestro),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
@@ -1346,7 +1346,7 @@ def ZVEN_ValidarComercializados():
                             )
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Observaciones',
                                 valores_lista=[''],
                                 actualizar_valor_xml=True, valor_xml=observacion
@@ -1406,7 +1406,7 @@ def ZVEN_ValidarComercializados():
                         aprobados_precio = ['NO' if p in posiciones_con_error_precio else 'SI' for p in posiciones_maestro]
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cantidad de producto',
                             valores_lista=valores_cantidad_sap,
                             actualizar_valor_xml=True, valor_xml=str(cantidad_xml),
@@ -1414,7 +1414,7 @@ def ZVEN_ValidarComercializados():
                         )
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Precio Unitario del producto',
                             valores_lista=valores_precio_sap,
                             actualizar_valor_xml=True, valor_xml=str(precio_xml),
@@ -1422,7 +1422,7 @@ def ZVEN_ValidarComercializados():
                         )
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Observaciones',
                             valores_lista=[''],
                             actualizar_valor_xml=True, valor_xml=observacion
@@ -1436,7 +1436,7 @@ def ZVEN_ValidarComercializados():
                     
                     else:
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Precio Unitario del producto',
                             valores_lista=[str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PrecioUnitario', 0)))
                                         for p in posiciones_maestro],
@@ -1445,7 +1445,7 @@ def ZVEN_ValidarComercializados():
                         )
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cantidad de producto',
                             valores_lista=[str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('CantPedido', 0)))
                                         for p in posiciones_maestro],
@@ -1476,7 +1476,7 @@ def ZVEN_ValidarComercializados():
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_nombre)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Nombre emisor',
                             valores_lista=[nombre_proveedor_sap],
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
@@ -1484,7 +1484,7 @@ def ZVEN_ValidarComercializados():
                         )
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Observaciones',
                             valores_lista=[''],
                             actualizar_valor_xml=True, valor_xml=observacion
@@ -1515,7 +1515,7 @@ def ZVEN_ValidarComercializados():
                     
                     # LineExtensionAmount
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='LineExtensionAmount',
                         valores_lista=[str(suma_valores_unitario)],
                         valores_comercializados=[str(suma_valores_unitario)],
@@ -1526,7 +1526,7 @@ def ZVEN_ValidarComercializados():
                     # VlrPagarCop
                     vlr_pagar_final = suma_valores_me if suma_valores_me > 0 else suma_valores_unitario
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='VlrPagarCop',
                         valores_lista=[str(vlr_pagar_final)],
                         valores_comercializados=[str(vlr_pagar_final)],
@@ -1536,7 +1536,7 @@ def ZVEN_ValidarComercializados():
                     
                     # Nombre emisor
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='Nombre emisor',
                         valores_lista=[nombre_proveedor_sap],
                         actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
@@ -1545,7 +1545,7 @@ def ZVEN_ValidarComercializados():
                     
                     # Posiciones
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='Posicion',
                         valores_lista=[str(p) for p in posiciones_maestro],
                         valores_comercializados=[str(p) for p in posiciones_maestro],
@@ -1554,7 +1554,7 @@ def ZVEN_ValidarComercializados():
                     
                     # Valor PorCalcular_hoc de la posición
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='Valor PorCalcular_hoc de la posicion',
                         valores_lista=[str(valores_unitario[i]) for i in range(n_posiciones)],
                         valores_comercializados=[str(valores_unitario[i]) for i in range(n_posiciones)],
@@ -1564,7 +1564,7 @@ def ZVEN_ValidarComercializados():
                     # Valor PorCalcular_hoc ME de la posición (si aplica)
                     if any(v > 0 for v in valores_me):
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Valor PorCalcular_hoc ME de la posicion',
                             valores_lista=[str(valores_me[i]) for i in range(n_posiciones) if valores_me[i] > 0],
                             valores_comercializados=[str(valores_me[i]) for i in range(n_posiciones) if valores_me[i] > 0],
@@ -1573,7 +1573,7 @@ def ZVEN_ValidarComercializados():
                     
                     # TRM
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='TRM',
                         valores_lista=[str(trm_sap)] * n_posiciones,
                         actualizar_valor_xml=True, valor_xml=str(trm_xml),
@@ -1582,7 +1582,7 @@ def ZVEN_ValidarComercializados():
                     
                     # Valor PorCalcular_hoc SAP
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='Valor PorCalcular_hoc SAP',
                         valores_lista=[str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PorCalcular', 0))) 
                                       for p in posiciones_maestro],
@@ -1607,7 +1607,7 @@ def ZVEN_ValidarComercializados():
                     
                     for nombre_item, campo_historico in campos_historico:
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item=nombre_item,
                             valores_lista=[safe_str(datos_historico_por_posicion.get(p, {}).get(campo_historico, ''))
                                           for p in posiciones_maestro],
@@ -1616,7 +1616,7 @@ def ZVEN_ValidarComercializados():
                     
                     # Cantidad y precio
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='Precio Unitario del producto',
                         valores_lista=[str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PrecioUnitario', 0)))
                                       for p in posiciones_maestro],
@@ -1625,7 +1625,7 @@ def ZVEN_ValidarComercializados():
                     )
                     
                     actualizar_items_comparativa(
-                        id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
                         nombre_item='Cantidad de producto',
                         valores_lista=[str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('CantPedido', 0)))
                                       for p in posiciones_maestro],
@@ -1663,8 +1663,8 @@ def ZVEN_ValidarComercializados():
         
         resumen = f"Procesados {registros_procesados} registros ZVEN/50. Exitosos: {registros_exitosos}, Con novedad: {registros_con_novedad}, En espera: {registros_en_espera}"
         
-        SetVar("vLocStrResultadoSP", "True")
-        SetVar("vLocStrResumenSP", resumen)
+        #SetVar("vLocStrResultadoSP", "True")
+        #SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
         exc_type = type(e).__name__
@@ -1678,8 +1678,8 @@ def ZVEN_ValidarComercializados():
         print(traceback.format_exc())
         print("=" * 80)
         
-        SetVar("vGblStrDetalleError", traceback.format_exc())
-        SetVar("vGblStrSystemError", "ErrorHU4_4.1")
-        SetVar("vLocStrResultadoSP", "False")
+        #SetVar("vGblStrDetalleError", traceback.format_exc())
+        #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
+        #SetVar("vLocStrResultadoSP", "False")
 
 

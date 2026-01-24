@@ -1300,10 +1300,10 @@ Los reportes del proceso se encuentran en las siguientes rutas:
                 cuerpo += """
 
 Cordialmente;
-BOT_Validación_FV_NC_ND_CXP_Validación de facturas Cuentas por Pagar
+BOT_VALIDACION_FV_NC_ND_CXP_VALIDACION de facturas Cuentas por Pagar
 """
             else:
-                msg['Subject'] = 'Error - BOT_Validación_FV_NC_ND_CXP - Fase 8 GENERACIÓN DE REPORTES'
+                msg['Subject'] = 'Error - BOT_VALIDACION_FV_NC_ND_CXP - Fase 8 GENERACIÓN DE REPORTES'
                 cuerpo = """Cordial saludo;
 
 Estimado usuario, ha ocurrido un error durante la generación de reportes.
@@ -1311,7 +1311,7 @@ Estimado usuario, ha ocurrido un error durante la generación de reportes.
 Por favor revisar los logs del proceso.
 
 Cordialmente;
-BOT_Validación_FV_NC_ND_CXP_Validación de facturas Cuentas por Pagar
+BOT_VALIDACION_FV_NC_ND_CXP_VALIDACION de facturas Cuentas por Pagar
 """
             
             msg['From'] = smtp_user
@@ -1516,8 +1516,8 @@ BOT_Validación_FV_NC_ND_CXP_Validación de facturas Cuentas por Pagar
         
         resumen = f"HU8 completada. {archivos_procesados} archivos procesados, {len([r for r in rutas_reportes.values() if r])} reportes generados"
         
-        SetVar("vLocStrResultadoSP", "True")
-        SetVar("vLocStrResumenSP", resumen)
+        #SetVar("vLocStrResultadoSP", "True")
+        #SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
         print("")
@@ -1534,9 +1534,9 @@ BOT_Validación_FV_NC_ND_CXP_Validación de facturas Cuentas por Pagar
         except:
             pass
         
-        SetVar("vGblStrDetalleError", str(e))
-        SetVar("vGblStrSystemError", traceback.format_exc())
-        SetVar("vLocStrResultadoSP", "False")
+        #SetVar("vGblStrDetalleError", str(e))
+        #SetVar("vGblStrSystemError", traceback.format_exc())
+        #SetVar("vLocStrResultadoSP", "False")
 
 
 # Mock para pruebas locales
@@ -1544,9 +1544,9 @@ if __name__ == "__main__":
     _mock_vars = {}
     def GetVar(name):
         return _mock_vars.get(name, "")
-    def SetVar(name, value):
+    def #SetVar(name, value):
         _mock_vars[name] = value
-        print(f"[SETVAR] {name} = {value}")
+        print(f"[#SetVar] {name} = {value}")
     
     _mock_vars["vLocDicConfig"] = '''{
         "ServidorBaseDatos": "localhost",

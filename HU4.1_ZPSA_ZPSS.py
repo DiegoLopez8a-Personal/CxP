@@ -244,7 +244,7 @@ def ZPSA_ZPSS_ValidarServicios():
         return False
     
     # =========================================================================
-    # FUNCIONES DE VALIDACIÓN
+    # FUNCIONES DE VALIDACION
     # =========================================================================
     
     def validar_tolerancia_numerica(valor1, valor2, tolerancia=500):
@@ -646,7 +646,7 @@ def ZPSA_ZPSS_ValidarServicios():
         
         # Valor principal
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+            registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item=nombre_campo_valor,
             valores_lista=[str(valor_sap)],
             actualizar_valor_xml=True, valor_xml=str(valor_xml),
@@ -655,7 +655,7 @@ def ZPSA_ZPSS_ValidarServicios():
         
         # Posiciones
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+            registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='Posicion',
             valores_lista=[d['Posicion'] for d in datos_filtrados],
             actualizar_aprobado=True, valor_aprobado='SI'
@@ -663,7 +663,7 @@ def ZPSA_ZPSS_ValidarServicios():
         
         # Valor PorCalcular_hoc SAP
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+            registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='Valor PorCalcular_hoc SAP',
             valores_lista=[str(normalizar_decimal(d['PorCalcular'])) for d in datos_filtrados],
             actualizar_aprobado=True, valor_aprobado='SI'
@@ -684,7 +684,7 @@ def ZPSA_ZPSS_ValidarServicios():
         
         for nombre_item, campo_historico in campos_basicos:
             actualizar_items_comparativa(
-                id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+                registro=registro, cx=cx, nit=nit, factura=factura,
                 nombre_item=nombre_item,
                 valores_lista=[safe_str(d.get(campo_historico, '')) for d in datos_filtrados],
                 actualizar_aprobado=True, valor_aprobado='SI'
@@ -703,7 +703,7 @@ def ZPSA_ZPSS_ValidarServicios():
         
         for nombre_item, campo_historico in campos_servicios:
             actualizar_items_comparativa(
-                id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+                registro=registro, cx=cx, nit=nit, factura=factura,
                 nombre_item=nombre_item,
                 valores_lista=[safe_str(d.get(campo_historico, '')) for d in datos_filtrados],
                 actualizar_aprobado=True, valor_aprobado='SI'
@@ -714,7 +714,7 @@ def ZPSA_ZPSS_ValidarServicios():
         nombre_campo_valor = 'VlrPagarCop' if es_usd else 'LineExtensionAmount'
         
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+            registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item=nombre_campo_valor,
             valores_lista=['NO ENCONTRADO'],
             actualizar_valor_xml=True, valor_xml=str(valor_xml),
@@ -722,7 +722,7 @@ def ZPSA_ZPSS_ValidarServicios():
         )
         
         actualizar_items_comparativa(
-            id_reg=registro_id, cx=cx, nit=nit, factura=factura,
+            registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='Observaciones',
             valores_lista=[''],
             actualizar_valor_xml=True, valor_xml=observacion
@@ -827,8 +827,8 @@ def ZPSA_ZPSS_ValidarServicios():
             
             if len(df_registros) == 0:
                 print("[INFO] No hay registros ZPSA/ZPSS/43 pendientes de procesar")
-                SetVar("vLocStrResultadoSP", "True")
-                SetVar("vLocStrResumenSP", "No hay registros ZPSA/ZPSS/43 pendientes de procesar")
+                #SetVar("vLocStrResultadoSP", "True")
+                #SetVar("vLocStrResumenSP", "No hay registros ZPSA/ZPSS/43 pendientes de procesar")
                 return
             
             # Variables de conteo
@@ -943,7 +943,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_trm)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
                                 valores_lista=[str(trm_sap)] * len(posiciones_usadas),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
@@ -951,7 +951,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             )
                         else:
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
                                 valores_lista=[str(trm_sap)] * len(posiciones_usadas),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
@@ -976,7 +976,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         actualizar_bd_cxp(cx, registro_id, campos_novedad_nombre)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Nombre emisor',
                             valores_lista=[nombre_proveedor_sap],
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
@@ -984,7 +984,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         )
                     else:
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Nombre emisor',
                             valores_lista=[nombre_proveedor_sap],
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
@@ -995,7 +995,7 @@ def ZPSA_ZPSS_ValidarServicios():
                     # 11. VALIDACIONES ESPECÍFICAS SEGÚN ORDEN/ELEMENTO PEP/ACTIVO FIJO
                     # =========================================================
                     
-                    # Determinar qué ruta de validación seguir
+                    # Determinar qué ruta de VALIDACION seguir
                     tiene_orden = any(campo_con_valor(d.get('Orden', '')) for d in datos_posiciones_usadas)
                     tiene_elemento_pep = any(campo_con_valor(d.get('ElementoPEP', '')) for d in datos_posiciones_usadas)
                     tiene_activo_fijo = any(campo_con_valor(d.get('ActivoFijo', '')) for d in datos_posiciones_usadas)
@@ -1043,7 +1043,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_ind)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Indicador impuestos',
                                 valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_indicador
@@ -1072,7 +1072,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_centro)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Centro de coste',
                                 valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_centro
@@ -1101,7 +1101,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Cuenta',
                                 valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
@@ -1136,7 +1136,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_clase)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Clase orden',
                                 valores_lista=[safe_str(d.get('ClaseOrden', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_clase
@@ -1171,7 +1171,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     actualizar_bd_cxp(cx, registro_id, campos_novedad_centro)
                                 
                                 actualizar_items_comparativa(
-                                    id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                    registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='Centro de coste',
                                     valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
                                     actualizar_aprobado=True, valor_aprobado=aprobados_centro
@@ -1203,7 +1203,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     actualizar_bd_cxp(cx, registro_id, campos_novedad_centro)
                                 
                                 actualizar_items_comparativa(
-                                    id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                    registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='Centro de coste',
                                     valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
                                     actualizar_aprobado=True, valor_aprobado=aprobados_centro
@@ -1232,7 +1232,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
                                 
                                 actualizar_items_comparativa(
-                                    id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                    registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='Cuenta',
                                     valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
                                     actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
@@ -1271,7 +1271,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_ind)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Indicador impuestos',
                             valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_indicador
@@ -1300,7 +1300,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_centro)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Centro de coste',
                             valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_centro
@@ -1329,7 +1329,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cuenta',
                             valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
@@ -1364,7 +1364,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_empl)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Emplazamiento',
                             valores_lista=[safe_str(d.get('Emplazamiento', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_empl
@@ -1412,7 +1412,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_ind)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Indicador impuestos',
                                 valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_indicador
@@ -1441,7 +1441,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_centro)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Centro de coste',
                                 valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_centro
@@ -1470,7 +1470,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
                             
                             actualizar_items_comparativa(
-                                id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Cuenta',
                                 valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
                                 actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
@@ -1505,7 +1505,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cuenta',
                             valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
@@ -1534,7 +1534,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_ind)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Indicador impuestos',
                             valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_indicador
@@ -1563,7 +1563,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_bd_cxp(cx, registro_id, campos_novedad_centro)
                         
                         actualizar_items_comparativa(
-                            id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Centro de coste',
                             valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
                             actualizar_aprobado=True, valor_aprobado=aprobados_centro
@@ -1604,9 +1604,9 @@ def ZPSA_ZPSS_ValidarServicios():
                                 }
                                 actualizar_bd_cxp(cx, registro_id, campos_novedad_ind_ceco)
                                 
-                                # Actualizar aprobación de indicador con resultado de validación CECO
+                                # Actualizar aprobación de indicador con resultado de VALIDACION CECO
                                 actualizar_items_comparativa(
-                                    id_reg=registro_id, cx=cx, nit=nit, factura=numero_factura,
+                                    registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='Indicador impuestos',
                                     valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
                                     actualizar_aprobado=True, valor_aprobado=aprobados_indicador_ceco
@@ -1669,8 +1669,8 @@ def ZPSA_ZPSS_ValidarServicios():
         
         resumen = f"Procesados {registros_procesados} registros ZPSA/ZPSS/43. Exitosos: {registros_exitosos}, Con novedad: {registros_con_novedad}"
         
-        SetVar("vLocStrResultadoSP", "True")
-        SetVar("vLocStrResumenSP", resumen)
+        #SetVar("vLocStrResultadoSP", "True")
+        #SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
         print("")
@@ -1681,9 +1681,9 @@ def ZPSA_ZPSS_ValidarServicios():
         print(traceback.format_exc())
         print("=" * 80)
         
-        SetVar("vGblStrDetalleError", str(e))
-        SetVar("vGblStrSystemError", traceback.format_exc())
-        SetVar("vLocStrResultadoSP", "False")
+        #SetVar("vGblStrDetalleError", str(e))
+        #SetVar("vGblStrSystemError", traceback.format_exc())
+        #SetVar("vLocStrResultadoSP", "False")
 
 
 # Mock para pruebas locales
@@ -1691,9 +1691,9 @@ if __name__ == "__main__":
     _mock_vars = {}
     def GetVar(name):
         return _mock_vars.get(name, "")
-    def SetVar(name, value):
+    def #SetVar(name, value):
         _mock_vars[name] = value
-        print(f"[SETVAR] {name} = {value}")
+        print(f"[#SetVar] {name} = {value}")
     
     _mock_vars["vLocDicConfig"] = '{"ServidorBaseDatos":"localhost","NombreBaseDatos":"NotificationsPaddy"}'
     _mock_vars["vGblStrUsuarioBaseDatos"] = "sa"
