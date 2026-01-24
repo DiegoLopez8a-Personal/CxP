@@ -2,38 +2,11 @@ def ZVEN_ValidarComercializados():
     """
     Función para procesar las validaciones de ZVEN/50 (Pedidos Comercializados).
     
-    VERSIÓN: 2.0 - Refactorizado para alinearse con ZPAF
-    
-    FLUJO PRINCIPAL:
-        1. Lee registros de [CxP].[HU41_CandidatosValidacion] con ClaseDePedido_hoc IN ('ZVEN', '50')
-        2. Valida archivos maestros (Maestro de comercializados.xlsx y Asociación cuenta indicador.xlsx)
-        3. Para cada registro:
-           - Busca OC y Factura en el maestro de comercializados
-           - Si NO existe: marca EN ESPERA y mueve insumos a carpeta destino
-           - Si EXISTE: valida posiciones contra histórico, TRM, cantidad/precio, nombre emisor
-        4. Actualiza [CxP].[DocumentsProcessing] con estados y observaciones
-        5. Genera trazabilidad en [dbo].[CxP.Comparativa]
-    
-    NOTA IMPORTANTE SOBRE PaymentMeans:
-        - Si PaymentMeans = '01', se agrega ' CONTADO' al resultado final
-        - Ejemplo: 'CON NOVEDAD - COMERCIALIZADOS CONTADO'
-    
-    ESTRUCTURA DE DATOS:
-        - Campos _dp: datos del XML (DocumentsProcessing)
-        - Campos _hoc: datos del histórico de órdenes de compra
-        - Campos _ddp: datos del detalle de documento
-        - DocumentsProcessing NO tiene sufijos (nombres base)
-    
-    Returns:
-        None: Actualiza variables globales en RocketBot
-            - vLocStrResultadoSP: 'True' si exitoso, 'False' si error
-            - vLocStrResumenSP: Resumen del procesamiento
-            - vGblStrDetalleError: Detalle del error (si aplica)
-            - vGblStrSystemError: Traceback completo (si aplica)
+    VERSIÓN: 2.2 - Corrección UnboundLocalError y Broadcasting de Aprobaciones
     """
     
     # =========================================================================
-    # IMPORTS - Todas las librerías dentro de la función
+    # IMPORTS
     # =========================================================================
     import json
     import ast
@@ -57,15 +30,6 @@ def ZVEN_ValidarComercializados():
     # =========================================================================
     
     def safe_str(v):
-        """
-        Convierte un valor a string de manera segura.
-        
-        Args:
-            v: Valor a convertir (cualquier tipo)
-            
-        Returns:
-            str: Valor convertido a string, vacío si es None o NaN
-        """
         if v is None:
             return ""
         if isinstance(v, str):
@@ -85,16 +49,6 @@ def ZVEN_ValidarComercializados():
             return ""
     
     def truncar_observacion(obs, max_len=3900):
-        """
-        Trunca observación para prevenir overflow en BD.
-        
-        Args:
-            obs: Observación a truncar
-            max_len: Longitud máxima permitida
-            
-        Returns:
-            str: Observación truncada si excede max_len
-        """
         if not obs:
             return ""
         obs_str = safe_str(obs)
@@ -103,18 +57,6 @@ def ZVEN_ValidarComercializados():
         return obs_str
     
     def parse_config(raw):
-        """
-        Parsea la configuración desde RocketBot.
-        
-        Args:
-            raw: Configuración en formato dict, JSON string o literal Python
-            
-        Returns:
-            dict: Configuración parseada
-            
-        Raises:
-            ValueError: Si la configuración está vacía o es inválida
-        """
         if isinstance(raw, dict):
             if not raw:
                 raise ValueError("Config vacia (dict)")
@@ -138,15 +80,6 @@ def ZVEN_ValidarComercializados():
             raise ValueError(f"Config invalida: {str(e)}")
     
     def normalizar_decimal(valor):
-        """
-        Normaliza valores decimales con punto o coma.
-        
-        Args:
-            valor: Valor numérico (puede ser string con coma/punto)
-            
-        Returns:
-            float: Valor normalizado, 0.0 si es inválido
-        """
         if pd.isna(valor) or valor == '' or valor is None:
             return 0.0
         if isinstance(valor, (int, float)):
@@ -154,9 +87,7 @@ def ZVEN_ValidarComercializados():
                 return 0.0
             return float(valor)
         valor_str = str(valor).strip()
-        # Reemplazar coma por punto para decimales
         valor_str = valor_str.replace(',', '.')
-        # Eliminar espacios y caracteres no numéricos excepto punto y signo
         valor_str = re.sub(r'[^\d.\-]', '', valor_str)
         try:
             return float(valor_str)
@@ -164,25 +95,11 @@ def ZVEN_ValidarComercializados():
             return 0.0
     
     # =========================================================================
-    # FUNCIONES DE CONEXIÓN A BASE DE DATOS
+    # CONEXIÓN A BASE DE DATOS
     # =========================================================================
     
     @contextmanager
     def crear_conexion_db(cfg, max_retries=3):
-        """
-        Crea conexión a la base de datos con reintentos y manejo de transacciones.
-        
-        Args:
-            cfg: Diccionario de configuración con ServidorBaseDatos y NombreBaseDatos
-            max_retries: Número máximo de reintentos
-            
-        Yields:
-            pyodbc.Connection: Conexión a la base de datos
-            
-        Raises:
-            ValueError: Si faltan parámetros de configuración
-            pyodbc.Error: Si falla la conexión después de todos los reintentos
-        """
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
         if missing:
@@ -191,10 +108,6 @@ def ZVEN_ValidarComercializados():
         usuario = GetVar("vGblStrUsuarioBaseDatos")
         contrasena = GetVar("vGblStrClaveBaseDatos")
         
-        # Estrategia de conexion:
-        # 1. Intentar con Usuario y Contraseña (para Produccion)
-        # 2. Si falla, intentar con Trusted Connection (para Desarrollo/Windows Auth)
-
         conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
@@ -217,20 +130,20 @@ def ZVEN_ValidarComercializados():
         excepcion_final = None
 
         # Intento 1: Autenticacion SQL
-        # for attempt in range(max_retries):
-        #     try:
-        #         cx = pyodbc.connect(conn_str_auth, timeout=30)
-        #         cx.autocommit = False
-        #         conectado = True
-        #         print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
-        #         break
-        #     except pyodbc.Error as e:
-        #         print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
-        #         excepcion_final = e
-        #         if attempt < max_retries - 1:
-        #             time.sleep(1)
+        for attempt in range(max_retries):
+            try:
+                cx = pyodbc.connect(conn_str_auth, timeout=30)
+                cx.autocommit = False
+                conectado = True
+                print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
+                break
+            except pyodbc.Error as e:
+                print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+                excepcion_final = e
+                if attempt < max_retries - 1:
+                    time.sleep(1)
 
-        # Intento 2: Trusted Connection (si fallo el anterior)
+        # Intento 2: Trusted Connection
         if not conectado:
             print("[DEBUG] Intentando conexion Trusted Connection (Windows Auth)...")
             for attempt in range(max_retries):
@@ -272,30 +185,11 @@ def ZVEN_ValidarComercializados():
     # =========================================================================
     
     def validar_archivo_maestro_comercializados(ruta_archivo):
-        """
-        Valida la estructura del archivo Maestro de comercializados.xlsx.
-        
-        Columnas requeridas según HU:
-            - OC
-            - FACTURA
-            - VALOR TOTAL OC
-            - POSICION
-            - PorCalcular_hoc (VALOR UNITARIO)
-            - PorCalcular_hoc (ME)
-        
-        Args:
-            ruta_archivo: Ruta completa al archivo Excel
-            
-        Returns:
-            tuple: (es_valido, mensaje, dataframe)
-        """
         try:
             if not os.path.exists(ruta_archivo):
                 return False, f"No existe el archivo: {ruta_archivo}", None
             
             df = pd.read_excel(ruta_archivo)
-            
-            # Limpiar nombres de columnas (quitar espacios extra)
             df.columns = df.columns.str.strip()
             
             columnas_requeridas = [
@@ -311,42 +205,20 @@ def ZVEN_ValidarComercializados():
             if len(df) == 0:
                 return False, "Maestro de comercializados esta vacio", None
             
-            # Convertir OC y FACTURA a string para comparaciones
             df['OC'] = df['OC'].astype(str).str.strip()
             df['FACTURA'] = df['FACTURA'].astype(str).str.strip()
             df['POSICION'] = df['POSICION'].astype(str).str.strip()
             
-            print(f"[DEBUG] Maestro de comercializados validado - {len(df)} registros")
             return True, "Estructura valida", df
             
         except Exception as e:
             return False, f"Error validando Maestro de comercializados: {str(e)}", None
     
     def validar_archivo_asociacion_cuenta(ruta_archivo):
-        """
-        Valida la estructura del archivo Asociación cuenta indicador.xlsx.
-        
-        Hoja requerida: 'grupo cuentas agrupacion provee' (o 'Grupo cuentas prove')
-        Columnas requeridas:
-            - Cta Mayor
-            - Nombre cuenta
-            - TIPO RET.
-            - IND.RETENCION
-            - Descripcion ind.Ret. (o similar)
-            - Agrupacion codigo
-            - Nombre codigo
-        
-        Args:
-            ruta_archivo: Ruta completa al archivo Excel
-            
-        Returns:
-            tuple: (es_valido, mensaje, dataframe)
-        """
         try:
             if not os.path.exists(ruta_archivo):
                 return False, f"No existe el archivo: {ruta_archivo}", None
             
-            # Intentar con diferentes nombres de hoja
             xl = pd.ExcelFile(ruta_archivo)
             hojas_posibles = ['Grupo cuentas prove', 'grupo cuentas agrupacion provee', 
                            'Grupo cuentas agrupacion provee']
@@ -358,7 +230,6 @@ def ZVEN_ValidarComercializados():
                     break
             
             if not hoja_encontrada:
-                # Usar la primera hoja que contenga 'cuentas' en el nombre
                 for hoja in xl.sheet_names:
                     if 'cuentas' in hoja.lower():
                         hoja_encontrada = hoja
@@ -369,13 +240,11 @@ def ZVEN_ValidarComercializados():
             
             df = pd.read_excel(ruta_archivo, sheet_name=hoja_encontrada)
             
-            # Verificar columnas (permitir variaciones menores)
             columnas_requeridas_base = ['Cta Mayor', 'Nombre cuenta', 'TIPO RET.', 'IND.RETENCION']
-            
             columnas_faltantes = []
+
             for col in columnas_requeridas_base:
                 if col not in df.columns:
-                    # Buscar variación
                     encontrado = False
                     for df_col in df.columns:
                         if col.lower().replace('.', '').replace(' ', '') in df_col.lower().replace('.', '').replace(' ', ''):
@@ -387,18 +256,16 @@ def ZVEN_ValidarComercializados():
             if columnas_faltantes:
                 return False, f"Columnas faltantes en Asociacion cuenta indicador: {columnas_faltantes}", None
             
-            print(f"[DEBUG] Asociacion cuenta indicador validado - {len(df)} registros")
             return True, "Estructura valida", df
             
         except Exception as e:
             return False, f"Error validando Asociacion cuenta indicador: {str(e)}", None
     
     # =========================================================================
-    # FUNCIONES DE NORMALIZACIÓN Y COMPARACIÓN DE NOMBRES (ZPAF LOGIC)
+    # FUNCIONES DE NORMALIZACIÓN Y COMPARACIÓN DE NOMBRES
     # =========================================================================
     
     def normalizar_nombre_empresa(nombre):
-        """Normaliza nombres de empresas según las reglas de la HU."""
         if pd.isna(nombre) or nombre == "":
             return ""
         
@@ -421,10 +288,6 @@ def ZVEN_ValidarComercializados():
         return nombre_limpio
     
     def comparar_nombres_proveedor(nombre_xml, nombre_sap):
-        """
-        Compara nombres de proveedores dividiendo por espacios y verificando
-        que contengan exactamente las mismas palabras sin importar el orden (LOGICA ZPAF).
-        """
         if pd.isna(nombre_xml) or pd.isna(nombre_sap):
             return False
         
@@ -444,17 +307,6 @@ def ZVEN_ValidarComercializados():
     # =========================================================================
     
     def validar_tolerancia_numerica(valor1, valor2, tolerancia=500):
-        """
-        Valida si dos valores numéricos están dentro del rango de tolerancia.
-        
-        Args:
-            valor1: Primer valor
-            valor2: Segundo valor
-            tolerancia: Diferencia máxima permitida (default: 500)
-            
-        Returns:
-            bool: True si la diferencia es <= tolerancia
-        """
         try:
             val1 = normalizar_decimal(valor1)
             val2 = normalizar_decimal(valor2)
@@ -463,21 +315,6 @@ def ZVEN_ValidarComercializados():
             return False
     
     def validar_cantidad_precio_tolerancia(cantidad_xml, precio_xml, cantidad_sap, precio_sap, valor_total_factura):
-        """
-        Valida cantidad y precio con tolerancia de 1 unidad/peso.
-        
-        La tolerancia de 1 NO debe hacer que el valor calculado exceda el valor total.
-        
-        Args:
-            cantidad_xml: Cantidad del XML
-            precio_xml: Precio unitario del XML
-            cantidad_sap: Cantidad del SAP
-            precio_sap: Precio unitario del SAP
-            valor_total_factura: Valor total de la factura
-            
-        Returns:
-            tuple: (cantidad_ok, precio_ok)
-        """
         try:
             cantidad_xml = normalizar_decimal(cantidad_xml)
             precio_xml = normalizar_decimal(precio_xml)
@@ -488,10 +325,9 @@ def ZVEN_ValidarComercializados():
             cantidad_ok = abs(cantidad_xml - cantidad_sap) <= 1
             precio_ok = abs(precio_xml - precio_sap) <= 1
             
-            # Verificar que no exceda valor total
             if cantidad_ok and precio_ok:
                 valor_calculado = cantidad_xml * precio_xml
-                if valor_calculado > valor_total + 500:  # Con tolerancia
+                if valor_calculado > valor_total + 500:
                     return False, False
             
             return cantidad_ok, precio_ok
@@ -504,21 +340,8 @@ def ZVEN_ValidarComercializados():
     # =========================================================================
     
     def copiar_insumos_a_carpeta_destino(ruta_origen, nombre_archivo, ruta_destino):
-        """
-        Copia insumos XML/PDF a la carpeta destino EN ESPERA - COMERCIALIZADOS.
-        
-        Args:
-            ruta_origen: Carpeta donde está el archivo original
-            nombre_archivo: Nombre del archivo a copiar
-            ruta_destino: Carpeta destino
-            
-        Returns:
-            tuple: (exito, ruta_nueva_o_mensaje_error)
-        """
         try:
-            # Crear carpeta destino si no existe
             os.makedirs(ruta_destino, exist_ok=True)
-            
             archivo_origen = os.path.join(ruta_origen, nombre_archivo)
             archivo_destino = os.path.join(ruta_destino, nombre_archivo)
             
@@ -528,7 +351,6 @@ def ZVEN_ValidarComercializados():
                 return True, archivo_destino
             else:
                 return False, f"No se encuentra el archivo origen: {archivo_origen}"
-                
         except Exception as e:
             return False, f"Error copiando insumos: {str(e)}"
     
@@ -537,26 +359,12 @@ def ZVEN_ValidarComercializados():
     # =========================================================================
     
     def actualizar_bd_cxp(cx, registro_id, campos_actualizar):
-        """
-        Actualiza campos en [CxP].[DocumentsProcessing].
-        
-        IMPORTANTE: DocumentsProcessing NO tiene sufijos _dp en sus columnas.
-        
-        Para ObservacionesFase_4: Conserva observaciones previas separadas por coma,
-        pero prima la última observación.
-        
-        Args:
-            cx: Conexión a la base de datos
-            registro_id: ID del registro a actualizar
-            campos_actualizar: Diccionario {nombre_campo: valor}
-        """
         try:
             sets = []
             parametros = []
             
             for campo, valor in campos_actualizar.items():
                 if valor is not None:
-                    # Manejo especial para ObservacionesFase_4 (concatenar)
                     if campo == 'ObservacionesFase_4':
                         sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE [{campo}] + ', ' + ? END")
                         parametros.extend([valor, valor])
@@ -567,16 +375,10 @@ def ZVEN_ValidarComercializados():
             if sets:
                 parametros.append(registro_id)
                 sql = f"UPDATE [CxP].[DocumentsProcessing] SET {', '.join(sets)} WHERE [ID] = ?"
-                
                 cur = cx.cursor()
                 cur.execute(sql, parametros)
-                affected_rows = cur.rowcount
                 cur.close()
-                
-                if affected_rows > 0:
-                    print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
-                else:
-                    print(f"[WARNING] No se encontro registro ID {registro_id} en DocumentsProcessing")
+                print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
             
         except Exception as e:
             print(f"[ERROR] Error actualizando DocumentsProcessing: {str(e)}")
@@ -586,62 +388,44 @@ def ZVEN_ValidarComercializados():
                                  actualizar_valor_xml=True, valor_xml=None,
                                  actualizar_aprobado=True, valor_aprobado=None,
                                  actualizar_orden_compra=True, val_orden_de_compra=None):
-        """
-        Actualiza o inserta items en [dbo].[CxP.Comparativa].
-        """
         cur = cx.cursor()
         
         def safe_db_val(v):
-            """Convierte strings vacios o 'None' a None real para BD"""
-            if v is None:
-                return None
+            if v is None: return None
             s = str(v).strip()
-            if not s or s.lower() == 'none' or s.lower() == 'null':
-                return None
+            if not s or s.lower() == 'none' or s.lower() == 'null': return None
             return s
 
-        # 1. Contar items existentes
         query_count = """
         SELECT COUNT(*)
         FROM [dbo].[CxP.Comparativa]
         WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
-        # Se agregó ID_registro para ser precisos con la agrupación
         cur.execute(query_count, (nit, factura, nombre_item, registro['ID_dp']))
         count_existentes = cur.fetchone()[0]
 
-        # 2. Manejo seguro de los Splits (convirtiendo None a lista vacía)
         lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
         lista_xml = valor_xml.split('|') if valor_xml else []
         lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
         
-        # En caso de que valor_aprobado sea una lista y no un string
         if isinstance(valor_aprobado, list):
              lista_aprob = valor_aprobado
 
-        # 3. Obtener el máximo conteo
         maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
-        count_nuevos = maximo_conteo # Corregido: Ya es un entero, no necesita len()
-        
         maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
 
-        # Iterar sobre los valores nuevos para actualizar o insertar
         for i in range(maximo_conteo):
-            # Extraer item de forma segura (si no existe índice, es None)
             item_compra = lista_compra[i] if i < len(lista_compra) else None
             item_xml = lista_xml[i] if i < len(lista_xml) else None
             item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
 
-            # Limpiar valores para la BD
             val_compra = safe_db_val(item_compra)
             val_xml = safe_db_val(item_xml)
             val_aprob = safe_db_val(item_aprob)
 
             if i < count_existentes:
-                # UPDATE: Construcción dinámica de la consulta
                 set_clauses = []
                 params = []
-
                 if actualizar_orden_compra:
                     set_clauses.append("Valor_Orden_de_Compra = ?")
                     params.append(val_compra)
@@ -652,9 +436,7 @@ def ZVEN_ValidarComercializados():
                     set_clauses.append("Aprobado = ?")
                     params.append(val_aprob)
 
-                # Si no hay nada que actualizar, continuamos al siguiente ciclo
-                if not set_clauses:
-                    continue
+                if not set_clauses: continue
 
                 update_query = f"""
                 WITH CTE AS (
@@ -667,12 +449,9 @@ def ZVEN_ValidarComercializados():
                 SET {", ".join(set_clauses)}
                 WHERE rn = ?
                 """
-                # Los parámetros del WHERE van antes del rn
                 final_params = params + [nit, factura, nombre_item, registro['ID_dp'], i + 1]
                 cur.execute(update_query, final_params)
-
             else:
-                # INSERT: Corregido el número de parámetros (ahora son 7)
                 insert_query = """
                 INSERT INTO [dbo].[CxP.Comparativa] (
                     Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
@@ -682,18 +461,9 @@ def ZVEN_ValidarComercializados():
                 cur.execute(insert_query, (registro['Fecha_de_retoma_antes_de_contabilizacion_dp'],registro['documenttype_dp'],registro['numero_de_liquidacion_u_orden_de_compra_dp'],registro['nombre_emisor_dp'], registro['ID_dp'], nit, factura, nombre_item, val_compra, val_xml, val_aprob))
         
         cur.close()
-        print(f"[PROCESADO] Item '{nombre_item}' - {count_nuevos} valor(es) enviados (Existían: {count_existentes})")
+        print(f"[PROCESADO] Item '{nombre_item}' - {maximo_conteo} valor(es)")
     
     def actualizar_estado_comparativa(cx, nit, factura, estado):
-        """
-        Actualiza el Estado_validacion_antes_de_eventos en CxP_Comparativa.
-        
-        Args:
-            cx: Conexión a BD
-            nit: NIT del proveedor
-            factura: Número de factura
-            estado: Estado a establecer
-        """
         cur = cx.cursor()
         update_sql = """
         UPDATE [dbo].[CxP.Comparativa]
@@ -702,86 +472,32 @@ def ZVEN_ValidarComercializados():
         """
         cur.execute(update_sql, (estado, nit, factura))
         cur.close()
-        print(f"[UPDATE] Estado comparativa: {estado}")
     
     def marcar_posiciones_procesadas(cx, doc_compra, posiciones):
-        """
-        Marca posiciones en Trans_Candidatos_HU41 como PROCESADO.
-        
-        Args:
-            cx: Conexión a BD
-            doc_compra: Número de orden de compra
-            posiciones: Lista de posiciones a marcar
-        """
         try:
             cur = cx.cursor()
-            
-            update_sql = """
-            UPDATE [CxP].[Trans_Candidatos_HU41]
-            SET Marca_hoc = 'PROCESADO'
-            WHERE DocCompra_hoc = ?
-            """
+            update_sql = "UPDATE [CxP].[Trans_Candidatos_HU41] SET Marca_hoc = 'PROCESADO' WHERE DocCompra_hoc = ?"
             cur.execute(update_sql, (doc_compra,))
-            print(f"[UPDATE] Marcado como PROCESADO - OC {doc_compra}")
-            
             cur.close()
-            
         except Exception as e:
             print(f"[ERROR] Error marcando posiciones: {str(e)}")
             raise
     
-    # =========================================================================
-    # FUNCIONES DE PROCESAMIENTO DE POSICIONES
-    # =========================================================================
-    
     def expandir_posiciones_string(valor_string, separador='|'):
-        """
-        Expande valores separados por | o comas.
-        
-        Args:
-            valor_string: String con valores separados
-            separador: Separador principal (default: |)
-            
-        Returns:
-            list: Lista de valores individuales
-        """
         if pd.isna(valor_string) or valor_string == '' or valor_string is None:
             return []
-        
         valor_str = safe_str(valor_string)
-        
-        # Intentar con separador |
         if '|' in valor_str:
             return [v.strip() for v in valor_str.split('|') if v.strip()]
-        
-        # Intentar con coma
         if ',' in valor_str:
             return [v.strip() for v in valor_str.split(',') if v.strip()]
-        
-        # Sin separador, devolver como lista de un elemento
         return [valor_str.strip()]
     
     def expandir_posiciones_historico(registro):
-        """
-        Expande las posiciones del histórico que están concatenadas en el registro.
-        
-        Los campos del histórico terminan en _hoc y pueden tener múltiples valores
-        separados por | o coma.
-        
-        Args:
-            registro: Registro de Trans_Candidatos_HU41 (dict o Series)
-            
-        Returns:
-            dict: {posicion: {datos}} para cada posición
-        """
         try:
-            # Expandir posiciones
             posiciones = expandir_posiciones_string(registro.get('Posicion_hoc', ''))
+            if not posiciones: return {}
             
-            if not posiciones:
-                return {}
-            
-            # Expandir valores correspondientes
             por_calcular = expandir_posiciones_string(registro.get('PorCalcular_hoc', ''))
             cant_pedido = expandir_posiciones_string(registro.get('CantPedido_hoc', ''))
             precio_unit = expandir_posiciones_string(registro.get('PrecioUnitario_hoc', ''))
@@ -798,13 +514,9 @@ def ZVEN_ValidarComercializados():
             cuenta26_list = expandir_posiciones_string(registro.get('Cuenta26_hoc', ''))
             tipo_nif_list = expandir_posiciones_string(registro.get('TipoNif_hoc', ''))
             acreedor_list = expandir_posiciones_string(registro.get('Acreedor_hoc', ''))
-            
-            # Datos comunes (usualmente no varían por posición)
             n_proveedor = safe_str(registro.get('NProveedor_hoc', ''))
             
-            # Crear diccionario por posición
             datos_por_posicion = {}
-            
             for i, posicion in enumerate(posiciones):
                 datos_por_posicion[posicion] = {
                     'Posicion': posicion,
@@ -826,51 +538,23 @@ def ZVEN_ValidarComercializados():
                     'DocFiEntrada': doc_fi_entrada_list[i] if i < len(doc_fi_entrada_list) else (doc_fi_entrada_list[0] if doc_fi_entrada_list else ''),
                     'Cuenta26': cuenta26_list[i] if i < len(cuenta26_list) else (cuenta26_list[0] if cuenta26_list else '')
                 }
-            
             return datos_por_posicion
-            
         except Exception as e:
             print(f"[ERROR] Error expandiendo posiciones del historico: {str(e)}")
             return {}
     
-    # =========================================================================
-    # FUNCIONES DE PROCESAMIENTO DE CASOS ESPECÍFICOS
-    # =========================================================================
-    
     def procesar_registro_sin_datos_maestro(cx, registro, cfg, sufijo_contado):
-        """
-        Procesa un registro cuando NO se encuentran datos en el maestro de comercializados.
-        
-        Flujo:
-            1. Intenta copiar insumos a carpeta EN ESPERA
-            2. Actualiza DocumentsProcessing con estado EN ESPERA - COMERCIALIZADOS
-            3. Genera trazabilidad en CxP_Comparativa
-        
-        Args:
-            cx: Conexión a BD
-            registro: Registro de Trans_Candidatos_HU41
-            cfg: Configuración
-            sufijo_contado: ' CONTADO' si PaymentMeans = '01', '' si no
-            
-        Returns:
-            str: 'EN_ESPERA'
-        """
         registro_id = safe_str(registro.get('ID_dp', ''))
         nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor_dp', ''))
         numero_factura = safe_str(registro.get('numero_de_factura_dp', ''))
         
-        # Obtener ruta de archivo
         ruta, nombre = os.path.split(safe_str(registro.get('RutaArchivo_dp', '')))
         carpeta_destino = cfg.get('CarpetaDestinoComercializados', '')
         
         if ruta and nombre and carpeta_destino:
-            # Intentar copiar insumos
-            copiado, resultado_copia = copiar_insumos_a_carpeta_destino(
-                ruta, nombre, carpeta_destino
-            )
-            
+            copiado, resultado_copia = copiar_insumos_a_carpeta_destino(ruta, nombre, carpeta_destino)
             if copiado:
-                observacion = f"No se encuentran datos de la orden de compra y factura en el archivo Maestro de comercializados"
+                observacion = "No se encuentran datos de la orden de compra y factura en el archivo Maestro de comercializados"
                 campos_actualizar = {
                     'EstadoFinalFase_4': 'Exitoso',
                     'ObservacionesFase_4': truncar_observacion(observacion),
@@ -878,47 +562,39 @@ def ZVEN_ValidarComercializados():
                     'RutaArchivo': carpeta_destino
                 }
             else:
-                observacion = f"No se encuentran datos de la orden de compra y factura en el archivo Maestro de comercializados - No se logran mover insumos a carpeta COMERCIALIZADOS"
+                observacion = "No se encuentran datos de la orden de compra y factura en el archivo Maestro de comercializados - No se logran mover insumos a carpeta COMERCIALIZADOS"
                 campos_actualizar = {
                     'EstadoFinalFase_4': 'Exitoso',
                     'ObservacionesFase_4': truncar_observacion(observacion),
                     'ResultadoFinalAntesEventos': f"EN ESPERA - COMERCIALIZADOS{sufijo_contado}"
                 }
         else:
-            observacion = f"No se encuentran datos de la orden de compra y factura en el archivo Maestro de comercializados - No se logran identificar insumos"
+            observacion = "No se encuentran datos de la orden de compra y factura en el archivo Maestro de comercializados - No se logran identificar insumos"
             campos_actualizar = {
                 'EstadoFinalFase_4': 'Exitoso',
                 'ObservacionesFase_4': truncar_observacion(observacion),
                 'ResultadoFinalAntesEventos': f"EN ESPERA - COMERCIALIZADOS{sufijo_contado}"
             }
         
-        # Actualizar DocumentsProcessing
         actualizar_bd_cxp(cx, registro_id, campos_actualizar)
         
-        # Actualizar CxP_Comparativa - Observaciones
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='Observaciones',
-            val_orden_de_compra=None,
+            nombre_item='Observaciones', val_orden_de_compra=None,
             actualizar_valor_xml=True, valor_xml=observacion
         )
         
-        # Actualizar estado
         actualizar_estado_comparativa(cx, nit, numero_factura, f"EN ESPERA - COMERCIALIZADOS{sufijo_contado}")
-        
         return 'EN_ESPERA'
     
     def procesar_sin_coincidencia_valores(cx, registro, posiciones_maestro, valores_unitario, valores_me, sufijo_contado):
-        """
-        Procesa cuando NO hay coincidencia de valores entre maestro e histórico.
-        """
         registro_id = safe_str(registro.get('ID_dp', ''))
         nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor_dp', ''))
         numero_factura = safe_str(registro.get('numero_de_factura_dp', ''))
         valor_a_pagar = normalizar_decimal(registro.get('valor_a_pagar_dp', 0))
         vlr_pagar_cop = normalizar_decimal(registro.get('VlrPagarCop_dp', 0))
         
-        observacion = f"No se encuentra coincidencia del Valor a pagar de la factura"
+        observacion = "No se encuentra coincidencia del Valor a pagar de la factura"
         resultado_final = f"CON NOVEDAD - COMERCIALIZADOS{sufijo_contado}"
         
         campos_novedad = {
@@ -928,80 +604,46 @@ def ZVEN_ValidarComercializados():
         }
         actualizar_bd_cxp(cx, registro_id, campos_novedad)
         
-        # Actualizar items en comparativa
-        # LineExtensionAmount
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='LineExtensionAmount',
-            val_orden_de_compra='NO ENCONTRADO',
+        n_pos = len(posiciones_maestro)
+
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='LineExtensionAmount', val_orden_de_compra='NO ENCONTRADO',
             actualizar_valor_xml=True, valor_xml=str(valor_a_pagar),
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
-        # VlrPagarCop
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='VlrPagarCop',
-            val_orden_de_compra='NO ENCONTRADO',
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='VlrPagarCop', val_orden_de_compra='NO ENCONTRADO',
             actualizar_valor_xml=True, valor_xml=str(vlr_pagar_cop),
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
-        # Observaciones
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='Observaciones',
-            val_orden_de_compra=None,
-            actualizar_valor_xml=True, valor_xml=observacion
-        )
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='Observaciones', val_orden_de_compra=None,
+            actualizar_valor_xml=True, valor_xml=observacion)
         
-        # Nombre emisor
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='NombreEmisor', # Corregido
-            val_orden_de_compra='NO ENCONTRADO',
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='NombreEmisor', val_orden_de_compra='NO ENCONTRADO',
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
-        # Posiciones
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='Posicion',
-            val_orden_de_compra='NO ENCONTRADO',
-            valores_comercializados=[str(p) for p in posiciones_maestro],
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='Posicion', val_orden_de_compra='|'.join([str(p) for p in posiciones_maestro]),
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
-        # Valor PorCalcular_hoc de la posición
-        valores_calc_comercializados = []
+        valores_calc = []
         for i in range(len(posiciones_maestro)):
-            if valores_me[i] > 0:
-                valores_calc_comercializados.append(str(valores_me[i]))
-            else:
-                valores_calc_comercializados.append(str(valores_unitario[i]))
+            if valores_me[i] > 0: valores_calc.append(str(valores_me[i]))
+            else: valores_calc.append(str(valores_unitario[i]))
         
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='ValorPorCalcularPosicion', # Corregido segun lista
-            val_orden_de_compra='NO ENCONTRADO',
-            valores_comercializados=valores_calc_comercializados,
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='ValorPorCalcularPosicion', val_orden_de_compra='|'.join(valores_calc),
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
-        # Fec.Doc y Fec.Reg
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='FecDoc', # Corregido segun lista
-            val_orden_de_compra='NO ENCONTRADO',
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='FecDoc', val_orden_de_compra='NO ENCONTRADO',
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
-        actualizar_items_comparativa(
-            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-            nombre_item='FecReg', # Corregido segun lista
-            val_orden_de_compra='NO ENCONTRADO',
-            actualizar_aprobado=True, valor_aprobado='NO'
-        )
+        actualizar_items_comparativa(registro=registro, cx=cx, nit=nit, factura=numero_factura,
+            nombre_item='FecReg', val_orden_de_compra='NO ENCONTRADO',
+            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos))
         
         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
     
@@ -1010,615 +652,213 @@ def ZVEN_ValidarComercializados():
     # =========================================================================
     
     try:
-        print("")
-        print("=" * 80)
-        print("[INICIO] Procesamiento ZVEN/50 - Comercializados")
-        print("=" * 80)
-        
+        print("="*80 + "\n[INICIO] Procesamiento ZVEN/50 - Comercializados\n" + "="*80)
         t_inicio = time.time()
         
-        # 1. Obtener y validar configuración
         cfg = parse_config(GetVar("vLocDicConfig"))
-        print("[INFO] Configuracion cargada exitosamente")
         
-        # Parámetros requeridos
-        required_config = [
-            'RutaInsumosComercializados',   # Ruta al Maestro de comercializados.xlsx
-            'RutaInsumoAsociacion',          # Ruta a Asociación cuenta indicador.xlsx
-            'CarpetaDestinoComercializados', # Carpeta destino EN ESPERA
-            'ServidorBaseDatos',
-            'NombreBaseDatos'
-        ]
+        required_config = ['RutaInsumosComercializados', 'RutaInsumoAsociacion', 'CarpetaDestinoComercializados', 'ServidorBaseDatos', 'NombreBaseDatos']
+        if any(not cfg.get(k) for k in required_config): raise ValueError(f"Faltan parametros")
         
-        missing_config = [k for k in required_config if not cfg.get(k)]
-        if missing_config:
-            raise ValueError(f"Faltan parametros de configuracion: {', '.join(missing_config)}")
-        
-        # 2. Validar archivos maestros
         ruta_maestro = cfg.get('RutaInsumosComercializados', '')
         ruta_asociacion = cfg.get('RutaInsumoAsociacion', '')
         
-        print("[INFO] Validando archivos maestros...")
+        if not validar_archivo_maestro_comercializados(ruta_maestro)[0]: raise FileNotFoundError("Maestro invalido")
+        if not validar_archivo_asociacion_cuenta(ruta_asociacion)[0]: raise FileNotFoundError("Asociacion invalido")
+        _, _, df_maestro = validar_archivo_maestro_comercializados(ruta_maestro)
         
-        es_valido_maestro, msg_maestro, df_maestro = validar_archivo_maestro_comercializados(ruta_maestro)
-        if not es_valido_maestro:
-            raise FileNotFoundError(msg_maestro)
-        
-        es_valido_asociacion, msg_asociacion, df_asociacion = validar_archivo_asociacion_cuenta(ruta_asociacion)
-        if not es_valido_asociacion:
-            raise FileNotFoundError(msg_asociacion)
-        
-        print("[INFO] Archivos maestros validados exitosamente")
-        
-        # 3. Conectar a base de datos y obtener registros ZVEN/50
         with crear_conexion_db(cfg) as cx:
-            print("[INFO] Obteniendo registros ZVEN/50 para procesar...")
-            
-            # Query para obtener registros ZVEN y 50 desde Trans_Candidatos_HU41
-            query_zven = """
-                SELECT * FROM [CxP].[HU41_CandidatosValidacion]
-                WHERE [ClaseDePedido_hoc] IN ('ZVEN', '50')
-                ORDER BY [executionDate_dp] DESC
-            """
-            
+            query_zven = "SELECT * FROM [CxP].[HU41_CandidatosValidacion] WHERE [ClaseDePedido_hoc] IN ('ZVEN', '50') ORDER BY [executionDate_dp] DESC"
             df_registros = pd.read_sql(query_zven, cx)
+            print(f"[INFO] {len(df_registros)} registros para procesar")
             
-            print(f"[INFO] Obtenidos {len(df_registros)} registros ZVEN/50 para procesar")
+            if df_registros.empty: return
             
-            if len(df_registros) == 0:
-                print("[INFO] No hay registros ZVEN/50 pendientes de procesar")
-                #SetVar("vLocStrResultadoSP", "True")
-                #SetVar("vLocStrResumenSP", "No hay registros ZVEN/50 pendientes de procesar")
-                return
+            cnt_proc, cnt_nov, cnt_esp, cnt_ok = 0, 0, 0, 0
             
-            # Variables de conteo
-            registros_procesados = 0
-            registros_con_novedad = 0
-            registros_en_espera = 0
-            registros_exitosos = 0
-            #################################################################################
-            # 4. Procesar cada registro
             for idx, registro in df_registros.iterrows():
                 try:
-                    registro_id = safe_str(registro.get('ID_dp', ''))
-                    numero_oc = safe_str(registro.get('numero_de_liquidacion_u_orden_de_compra_dp', ''))
-                    numero_factura = safe_str(registro.get('numero_de_factura_dp', ''))
-                    payment_means = safe_str(registro.get('forma_de_pago_dp', ''))
-                    
-                    print(f"\n[PROCESO] Registro {registros_procesados + 1}/{len(df_registros)}: OC {numero_oc}, Factura {numero_factura}")
-                    
-                    # Determinar sufijo CONTADO según PaymentMeans
-                    sufijo_contado = " CONTADO" if payment_means == "01" else ""
-                    
-                    # 5. Buscar en maestro de comercializados
-                    registros_maestro = df_maestro[
-                        (df_maestro['OC'] == numero_oc) &
-                        (df_maestro['FACTURA'] == numero_factura)
-                    ]
-                    
-                    if len(registros_maestro) == 0:
-                        print(f"[INFO] No se encuentran datos de OC {numero_oc} y Factura {numero_factura} en maestro")
-                        procesar_registro_sin_datos_maestro(cx, registro, cfg, sufijo_contado)
-                        registros_en_espera += 1
-                        registros_procesados += 1
-                        continue
-                    
-                    # 6. Datos encontrados en el maestro - extraer
-                    print(f"[DEBUG] Encontrados {len(registros_maestro)} registros en maestro")
-                    
-                    posiciones_maestro = registros_maestro['POSICION'].astype(str).tolist()
-                    valores_unitario = [normalizar_decimal(v) for v in registros_maestro['PorCalcular_hoc (VALOR UNITARIO)'].tolist()]
-                    valores_me = [normalizar_decimal(v) for v in registros_maestro['PorCalcular_hoc (ME)'].tolist()]
-                    
+                    reg_id = safe_str(registro.get('ID_dp', ''))
+                    num_oc = safe_str(registro.get('numero_de_liquidacion_u_orden_de_compra_dp', ''))
+                    num_fac = safe_str(registro.get('numero_de_factura_dp', ''))
+                    pay_means = safe_str(registro.get('forma_de_pago_dp', ''))
                     nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor_dp', ''))
+                    print(f"\n[PROCESO] {cnt_proc+1}: OC {num_oc}, Factura {num_fac}")
                     
-                    # Actualizar campos comercializado en DocumentsProcessing
-                    campos_comercializado = {
-                        'Posicion_Comercializado': ','.join(posiciones_maestro),
-                        'Valor_a_pagar_Comercializado': ','.join(map(str, valores_unitario)),
-                        'Valor_a_pagar_Comercializado_ME': ','.join(map(str, valores_me))
-                    }
-                    actualizar_bd_cxp(cx, registro_id, campos_comercializado)
-                    ########################################################################
-                    # 7. Expandir datos del histórico y validar coincidencias
-                    print(f"[DEBUG] Validando coincidencia de posiciones con historico...")
+                    sufijo = " CONTADO" if pay_means == "01" else ""
                     
-                    datos_historico_por_posicion = expandir_posiciones_historico(registro)
-                    
-                    if not datos_historico_por_posicion:
-                        print(f"[WARNING] No se pudieron expandir datos del historico para OC {numero_oc}")
-                        observacion = f"No se encuentran datos del historico en el registro"
-                        resultado_final = f"CON NOVEDAD - COMERCIALIZADOS{sufijo_contado}"
-                        
-                        campos_novedad = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': resultado_final
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        registros_con_novedad += 1
-                        registros_procesados += 1
+                    matches = df_maestro[(df_maestro['OC'] == num_oc) & (df_maestro['FACTURA'] == num_fac)]
+                    if matches.empty:
+                        procesar_registro_sin_datos_maestro(cx, registro, cfg, sufijo)
+                        cnt_esp += 1; cnt_proc += 1
                         continue
                     
-                    # Validar coincidencia de posiciones y valores
-                    coincidencias_encontradas = True
-                    detalles_validacion = []
+                    pos_maestro = matches['POSICION'].astype(str).tolist()
+                    vals_unit = [normalizar_decimal(v) for v in matches['PorCalcular_hoc (VALOR UNITARIO)']]
+                    vals_me = [normalizar_decimal(v) for v in matches['PorCalcular_hoc (ME)']]
+                    n_pos = len(pos_maestro)
+
+                    # Update DocsProcessing
+                    actualizar_bd_cxp(cx, reg_id, {
+                        'Posicion_Comercializado': ','.join(pos_maestro),
+                        'Valor_a_pagar_Comercializado': ','.join(map(str, vals_unit)),
+                        'Valor_a_pagar_Comercializado_ME': ','.join(map(str, vals_me))
+                    })
+
+                    datos_hist = expandir_posiciones_historico(registro)
+                    if not datos_hist:
+                        obs = "No se encuentran datos del historico en el registro"
+                        actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'Exitoso', 'ObservacionesFase_4': truncar_observacion(obs), 'ResultadoFinalAntesEventos': f"CON NOVEDAD - COMERCIALIZADOS{sufijo}"})
+                        actualizar_estado_comparativa(cx, nit, num_fac, f"CON NOVEDAD - COMERCIALIZADOS{sufijo}")
+                        cnt_nov += 1; cnt_proc += 1
+                        continue
                     
-                    for i, posicion in enumerate(posiciones_maestro):
-                        datos_pos = datos_historico_por_posicion.get(posicion)
-                        
-                        if datos_pos is None:
-                            coincidencias_encontradas = False
-                            detalles_validacion.append(f"Posicion {posicion} no encontrada en historico")
-                            break
-                        
-                        valor_historico = normalizar_decimal(datos_pos.get('PorCalcular', 0))
-                        
-                        # Comparar según si hay valor ME
-                        if valores_me[i] > 0:
-                            if abs(valor_historico - valores_me[i]) > 0.01:
-                                coincidencias_encontradas = False
-                                detalles_validacion.append(f"Posicion {posicion}: ME maestro {valores_me[i]} vs historico {valor_historico}")
-                                break
-                        else:
-                            if abs(valor_historico - valores_unitario[i]) > 0.01:
-                                coincidencias_encontradas = False
-                                detalles_validacion.append(f"Posicion {posicion}: Unitario maestro {valores_unitario[i]} vs historico {valor_historico}")
-                                break
+                    coincide = True
+                    for i, p in enumerate(pos_maestro):
+                        d = datos_hist.get(p)
+                        if not d:
+                            coincide = False; break
+                        v_hist = normalizar_decimal(d.get('PorCalcular', 0))
+                        target = vals_me[i] if vals_me[i] > 0 else vals_unit[i]
+                        if abs(v_hist - target) > 0.01:
+                            coincide = False; break
                             
-                    if not coincidencias_encontradas:
-                        print(f"[INFO] No hay coincidencia de valores para OC {numero_oc}: {'; '.join(detalles_validacion)}")
-                        procesar_sin_coincidencia_valores(cx, registro, posiciones_maestro, valores_unitario, valores_me, sufijo_contado)
-                        registros_con_novedad += 1
-                        registros_procesados += 1
-                        continue
-                    ##############################################################
-                    
-                    # 8. Validar sumas totales con tolerancia de 500
-                    print(f"[DEBUG] Validando sumas con tolerancia...")
-                    
-                    valor_a_pagar = normalizar_decimal(registro.get('Valor de la Compra LEA_ddp', 0))
-                    vlr_pagar_cop = normalizar_decimal(registro.get('VlrPagarCop_dp', 0))
-                    
-                    suma_valores_unitario = sum(valores_unitario)
-                    suma_valores_me = sum(valores_me)
-                    
-                    validacion_suma_exitosa = True
-                    mensaje_validacion_suma = ""
-                    
-                    # Si hay valores ME, validar ambos
-                    if any(v > 0 for v in valores_me):
-                        if not validar_tolerancia_numerica(suma_valores_unitario, valor_a_pagar, 500):
-                            validacion_suma_exitosa = False
-                            mensaje_validacion_suma += f"Suma unitarios {suma_valores_unitario} vs valor a pagar {valor_a_pagar}. "
-                        
-                        if vlr_pagar_cop > 0 and not validar_tolerancia_numerica(suma_valores_me, vlr_pagar_cop, 500):
-                            validacion_suma_exitosa = False
-                            mensaje_validacion_suma += f"Suma ME {suma_valores_me} vs VlrPagarCop {vlr_pagar_cop}. "
-                    else:
-                        if not validar_tolerancia_numerica(suma_valores_unitario, valor_a_pagar, 500):
-                            validacion_suma_exitosa = False
-                            mensaje_validacion_suma = f"Suma unitarios {suma_valores_unitario} vs valor a pagar {valor_a_pagar}"
-                    
-                    if not validacion_suma_exitosa:
-                        print(f"[INFO] Valores fuera del rango de tolerancia para OC {numero_oc}: {mensaje_validacion_suma}")
-                        observacion = f"No se encuentra coincidencia del Valor a pagar de la factura"
-                        resultado_final = f"CON NOVEDAD - COMERCIALIZADOS{sufijo_contado}"
-                        
-                        campos_novedad = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': resultado_final
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
-                        
-                        # Actualizar comparativa con valores
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='LineExtensionAmount',
-                            val_orden_de_compra=str(suma_valores_unitario),
-                            valores_comercializados=[str(suma_valores_unitario)],
-                            actualizar_valor_xml=True, valor_xml=str(valor_a_pagar),
-                            actualizar_aprobado=True, valor_aprobado='NO'
-                        )
-                        
-                        if any(v > 0 for v in valores_me):
-                            actualizar_items_comparativa(
-                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='VlrPagarCop',
-                                val_orden_de_compra=str(suma_valores_me),
-                                valores_comercializados=[str(suma_valores_me)],
-                                actualizar_valor_xml=True, valor_xml=str(vlr_pagar_cop),
-                                actualizar_aprobado=True, valor_aprobado='NO'
-                            )
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Observaciones',
-                            val_orden_de_compra=None,
-                            actualizar_valor_xml=True, valor_xml=observacion
-                        )
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        registros_con_novedad += 1
-                        registros_procesados += 1
+                    if not coincide:
+                        procesar_sin_coincidencia_valores(cx, registro, pos_maestro, vals_unit, vals_me, sufijo)
+                        cnt_nov += 1; cnt_proc += 1
                         continue
                     
-                    # 9. Validar TRM (LOGICA ZPAF: 0.01 tolerancia)
-                    print(f"[DEBUG] Validando TRM...")
+                    # Validar Sumas
+                    vlr_pagar = normalizar_decimal(registro.get('Valor de la Compra LEA_ddp', 0))
+                    vlr_cop = normalizar_decimal(registro.get('VlrPagarCop_dp', 0))
+                    sum_unit = sum(vals_unit)
+                    sum_me = sum(vals_me)
                     
-                    if registro.get('DocumentCurrencyCode_dp') == 'COP':
-                        print('No se requiere validar TRM, el valor es COP')
+                    sum_ok = True
+                    if any(v>0 for v in vals_me):
+                        if not validar_tolerancia_numerica(sum_unit, vlr_pagar, 500): sum_ok = False
+                        if vlr_cop > 0 and not validar_tolerancia_numerica(sum_me, vlr_cop, 500): sum_ok = False
                     else:
+                        if not validar_tolerancia_numerica(sum_unit, vlr_pagar, 500): sum_ok = False
+
+                    if not sum_ok:
+                        obs = "No se encuentra coincidencia del Valor a pagar de la factura"
+                        actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'Exitoso', 'ObservacionesFase_4': truncar_observacion(obs), 'ResultadoFinalAntesEventos': f"CON NOVEDAD - COMERCIALIZADOS{sufijo}"})
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'LineExtensionAmount', val_orden_de_compra=str(sum_unit), actualizar_valor_xml=True, valor_xml=str(vlr_pagar), actualizar_aprobado=True, valor_aprobado='|'.join(['NO']*n_pos))
+                        if any(v>0 for v in vals_me):
+                            actualizar_items_comparativa(registro, cx, nit, num_fac, 'VlrPagarCop', val_orden_de_compra=str(sum_me), actualizar_valor_xml=True, valor_xml=str(vlr_cop), actualizar_aprobado=True, valor_aprobado='|'.join(['NO']*n_pos))
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'Observaciones', valor_xml=obs)
+                        actualizar_estado_comparativa(cx, nit, num_fac, f"CON NOVEDAD - COMERCIALIZADOS{sufijo}")
+                        cnt_nov += 1; cnt_proc += 1
+                        continue
+
+                    # Validar TRM
+                    trm_sap = 0.0 # Initialize variable
+                    trm_xml = 0.0
+                    
+                    if registro.get('DocumentCurrencyCode_dp') != 'COP':
                         trm_xml = normalizar_decimal(registro.get('CalculationRate_dp', 0))
-                        primera_posicion = posiciones_maestro[0]
-                        datos_primera_pos = datos_historico_por_posicion.get(primera_posicion, {})
-                        trm_sap = normalizar_decimal(datos_primera_pos.get('Trm', 0))
-                        
-                        # Solo validar TRM si hay valor en el XML
-                        trm_coincide = True
-                        if trm_xml > 0 or trm_sap > 0:
-                            trm_coincide = abs(trm_xml - trm_sap) < 0.01
-                        
-                        if not trm_coincide:
-                            print(f"[INFO] TRM no coincide para OC {numero_oc}: XML {trm_xml} vs SAP {trm_sap}")
-                            observacion = f"No se encuentra coincidencia en el campo TRM de la factura vs la informacion reportada en SAP"
-                            resultado_final = f"CON NOVEDAD - COMERCIALIZADOS{sufijo_contado}"
-                            
-                            campos_novedad_trm = {
-                                'EstadoFinalFase_4': 'Exitoso',
-                                'ObservacionesFase_4': truncar_observacion(observacion),
-                                'ResultadoFinalAntesEventos': resultado_final
-                            }
-                            actualizar_bd_cxp(cx, registro_id, campos_novedad_trm)
-                            
-                            # Actualizar TRM en comparativa
-                            actualizar_items_comparativa(
-                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='TRM',
-                                val_orden_de_compra='|'.join([str(trm_sap)] * len(posiciones_maestro)),
-                                actualizar_valor_xml=True, valor_xml=str(trm_xml),
-                                actualizar_aprobado=True, valor_aprobado='NO'
-                            )
-                            
-                            actualizar_items_comparativa(
-                                registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='Observaciones',
-                                val_orden_de_compra=None,
-                                actualizar_valor_xml=True, valor_xml=observacion
-                            )
-                            
-                            actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                            
-                            registros_con_novedad += 1
-                            registros_procesados += 1
+                        d_prim = datos_hist.get(pos_maestro[0], {})
+                        trm_sap = normalizar_decimal(d_prim.get('Trm', 0))
+
+                        if (trm_xml > 0 or trm_sap > 0) and abs(trm_xml - trm_sap) >= 0.01:
+                            obs = "No se encuentra coincidencia en el campo TRM"
+                            actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'Exitoso', 'ObservacionesFase_4': truncar_observacion(obs), 'ResultadoFinalAntesEventos': f"CON NOVEDAD - COMERCIALIZADOS{sufijo}"})
+                            actualizar_items_comparativa(registro, cx, nit, num_fac, 'TRM', val_orden_de_compra='|'.join([str(trm_sap)]*n_pos), actualizar_valor_xml=True, valor_xml=str(trm_xml), actualizar_aprobado=True, valor_aprobado='|'.join(['NO']*n_pos))
+                            actualizar_items_comparativa(registro, cx, nit, num_fac, 'Observaciones', valor_xml=obs)
+                            actualizar_estado_comparativa(cx, nit, num_fac, f"CON NOVEDAD - COMERCIALIZADOS{sufijo}")
+                            cnt_nov += 1; cnt_proc += 1
                             continue
-                    ########################################
-                    # 10. Validar cantidad y precio unitario
-                    print(f"[DEBUG] Validando cantidad y precio unitario...")
+
+                    # Validar Cantidad/Precio
+                    cant_xml = normalizar_decimal(registro.get('Cantidad de producto_ddp', 0))
+                    prec_xml = normalizar_decimal(registro.get('Precio Unitario del producto_ddp', 0))
                     
-                    cantidad_xml = normalizar_decimal(registro.get('Cantidad de producto_ddp', 0))
-                    precio_xml = normalizar_decimal(registro.get('Precio Unitario del producto_ddp', 0))
+                    cp_ok = True
+                    err_c, err_p = [], []
                     
-                    todas_posiciones_cantidad_precio_ok = True
-                    posiciones_con_error_cantidad = []
-                    posiciones_con_error_precio = []
-                    
-                    for i, posicion in enumerate(posiciones_maestro):
-                        datos_pos = datos_historico_por_posicion.get(posicion, {})
-                        cantidad_sap = normalizar_decimal(datos_pos.get('CantPedido', 0))
-                        precio_sap = normalizar_decimal(datos_pos.get('PrecioUnitario', 0))
+                    for p in pos_maestro:
+                        d = datos_hist.get(p, {})
+                        c_sap = normalizar_decimal(d.get('CantPedido', 0))
+                        pr_sap = normalizar_decimal(d.get('PrecioUnitario', 0))
                         
-                        cantidad_ok, precio_ok = validar_cantidad_precio_tolerancia(
-                            cantidad_xml, precio_xml, cantidad_sap, precio_sap, valor_a_pagar
-                        )
+                        cok, pok = validar_cantidad_precio_tolerancia(cant_xml, prec_xml, c_sap, pr_sap, vlr_pagar)
+                        if not cok: err_c.append(p); cp_ok = False
+                        if not pok: err_p.append(p); cp_ok = False
                         
-                        if not cantidad_ok:
-                            posiciones_con_error_cantidad.append(posicion)
-                            todas_posiciones_cantidad_precio_ok = False
-                        if not precio_ok:
-                            posiciones_con_error_precio.append(posicion)
-                            todas_posiciones_cantidad_precio_ok = False
-                    
-                    if not todas_posiciones_cantidad_precio_ok:
-                        print(f"[INFO] Cantidad/precio no coinciden para OC {numero_oc}")
-                        observacion = f"No se encuentra coincidencia en cantidad y/o precio unitario de la factura vs la informacion reportada en SAP"
-                        resultado_final = f"CON NOVEDAD - COMERCIALIZADOS{sufijo_contado}"
+                    if not cp_ok:
+                        obs = "No se encuentra coincidencia en cantidad y/o precio unitario"
+                        actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'Exitoso', 'ObservacionesFase_4': truncar_observacion(obs), 'ResultadoFinalAntesEventos': f"CON NOVEDAD - COMERCIALIZADOS{sufijo}"})
                         
-                        campos_novedad_cp = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': resultado_final
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_cp)
+                        vals_c_sap = [str(normalizar_decimal(datos_hist.get(p, {}).get('CantPedido', 0))) for p in pos_maestro]
+                        vals_p_sap = [str(normalizar_decimal(datos_hist.get(p, {}).get('PrecioUnitario', 0))) for p in pos_maestro]
                         
-                        # Actualizar comparativa
-                        n_pos = len(posiciones_maestro)
+                        aprob_c = '|'.join(['NO' if p in err_c else 'SI' for p in pos_maestro])
+                        aprob_p = '|'.join(['NO' if p in err_p else 'SI' for p in pos_maestro])
                         
-                        valores_cantidad_sap = [str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('CantPedido', 0))) for p in posiciones_maestro]
-                        valores_precio_sap = [str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PrecioUnitario', 0))) for p in posiciones_maestro]
-                        
-                        aprobados_cantidad = ['NO' if p in posiciones_con_error_cantidad else 'SI' for p in posiciones_maestro]
-                        aprobados_precio = ['NO' if p in posiciones_con_error_precio else 'SI' for p in posiciones_maestro]
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='CantidadProducto', # Corregido
-                            val_orden_de_compra='|'.join(valores_cantidad_sap),
-                            actualizar_valor_xml=True, valor_xml=str(cantidad_xml),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_cantidad[0] if n_pos == 1 else None
-                        )
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='PrecioUnitarioProducto', # Corregido
-                            val_orden_de_compra='|'.join(valores_precio_sap),
-                            actualizar_valor_xml=True, valor_xml=str(precio_xml),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_precio[0] if n_pos == 1 else None
-                        )
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Observaciones',
-                            val_orden_de_compra=None,
-                            actualizar_valor_xml=True, valor_xml=observacion
-                        )
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        registros_con_novedad += 1
-                        registros_procesados += 1
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'CantidadProducto', val_orden_de_compra='|'.join(vals_c_sap), valor_xml=str(cant_xml), valor_aprobado=aprob_c)
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'PrecioUnitarioProducto', val_orden_de_compra='|'.join(vals_p_sap), valor_xml=str(prec_xml), valor_aprobado=aprob_p)
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'Observaciones', valor_xml=obs)
+                        actualizar_estado_comparativa(cx, nit, num_fac, f"CON NOVEDAD - COMERCIALIZADOS{sufijo}")
+                        cnt_nov += 1; cnt_proc += 1
                         continue
-                    
                     else:
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='PrecioUnitarioProducto', # Corregido
-                            val_orden_de_compra='|'.join([str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PrecioUnitario', 0)))
-                                        for p in posiciones_maestro]),
-                            actualizar_valor_xml=True, valor_xml=str(precio_xml),
-                            actualizar_aprobado=True, valor_aprobado='SI' # Changed to SI based on successful validation
-                        )
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='CantidadProducto', # Corregido
-                            val_orden_de_compra='|'.join([str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('CantPedido', 0)))
-                                        for p in posiciones_maestro]),
-                            actualizar_valor_xml=True, valor_xml=str(cantidad_xml),
-                            actualizar_aprobado=True, valor_aprobado='SI' # Changed to SI
-                        )
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                    #####################################################
-                    # 11. Validar nombre emisor (LOGICA ZPAF)
-                    print(f"[DEBUG] Validando nombre emisor...")
-                    
-                    nombre_emisor_xml = safe_str(registro.get('nombre_emisor_dp', ''))
-                    nombre_proveedor_sap = safe_str(datos_primera_pos.get('Acreedor', ''))
-                    
-                    nombres_coinciden = comparar_nombres_proveedor(nombre_emisor_xml, nombre_proveedor_sap)
-                    
-                    if not nombres_coinciden:
-                        print(f"[INFO] Nombre emisor no coincide para OC {numero_oc}: XML '{nombre_emisor_xml}' vs SAP '{nombre_proveedor_sap}'")
-                        observacion = f"No se encuentra coincidencia en Nombre Emisor de la factura vs la informacion reportada en SAP"
-                        resultado_final = f"CON NOVEDAD - COMERCIALIZADOS{sufijo_contado}"
-                        
-                        campos_novedad_nombre = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': resultado_final
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_nombre)
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='NombreEmisor', # Corregido
-                            val_orden_de_compra=nombre_proveedor_sap,
-                            actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
-                            actualizar_aprobado=True, valor_aprobado='NO'
-                        )
-                        
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Observaciones',
-                            val_orden_de_compra=None,
-                            actualizar_valor_xml=True, valor_xml=observacion
-                        )
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        registros_con_novedad += 1
-                        registros_procesados += 1
+                        # Log success for CP
+                        vals_c_sap = [str(normalizar_decimal(datos_hist.get(p, {}).get('CantPedido', 0))) for p in pos_maestro]
+                        vals_p_sap = [str(normalizar_decimal(datos_hist.get(p, {}).get('PrecioUnitario', 0))) for p in pos_maestro]
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'CantidadProducto', val_orden_de_compra='|'.join(vals_c_sap), valor_xml=str(cant_xml), valor_aprobado='|'.join(['SI']*n_pos))
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'PrecioUnitarioProducto', val_orden_de_compra='|'.join(vals_p_sap), valor_xml=str(prec_xml), valor_aprobado='|'.join(['SI']*n_pos))
+
+                    # Validar Nombre
+                    nom_xml = safe_str(registro.get('nombre_emisor_dp', ''))
+                    nom_sap = safe_str(datos_hist.get(pos_maestro[0], {}).get('Acreedor', ''))
+
+                    if not comparar_nombres_proveedor(nom_xml, nom_sap):
+                        obs = "No se encuentra coincidencia en Nombre Emisor"
+                        actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'Exitoso', 'ObservacionesFase_4': truncar_observacion(obs), 'ResultadoFinalAntesEventos': f"CON NOVEDAD - COMERCIALIZADOS{sufijo}"})
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'NombreEmisor', val_orden_de_compra=nom_sap, valor_xml=nom_xml, valor_aprobado='|'.join(['NO']*n_pos))
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'Observaciones', valor_xml=obs)
+                        actualizar_estado_comparativa(cx, nit, num_fac, f"CON NOVEDAD - COMERCIALIZADOS{sufijo}")
+                        cnt_nov += 1; cnt_proc += 1
                         continue
+
+                    # SUCCESS
+                    marcar_posiciones_procesadas(cx, safe_str(registro.get('DocCompra_hoc', '')), safe_str(registro['Posicion_hoc']))
+                    actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'Exitoso', 'ResultadoFinalAntesEventos': f"PROCESADO{sufijo}"})
                     
-                    ###########################################################
-                    # 12. TODAS LAS VALIDACIONES EXITOSAS
-                    print(f"[SUCCESS] Registro {registro_id} procesado exitosamente")
+                    # Log all success
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'LineExtensionAmount', val_orden_de_compra='|'.join([str(v) for v in vals_unit]), valor_xml=str(vlr_pagar), valor_aprobado='|'.join(['SI']*n_pos))
                     
-                    # Marcar posiciones como procesadas
-                    doc_compra = safe_str(registro.get('DocCompra_hoc', ''))
-                    marcar_posiciones_procesadas(cx, doc_compra, safe_str(registro['Posicion_hoc']))
+                    vlr_final = sum_me if sum_me > 0 else sum_unit
+                    vlr_xml_final = vlr_cop if vlr_cop > 0 else vlr_pagar
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'VlrPagarCop', val_orden_de_compra=str(vlr_final), valor_xml=str(vlr_xml_final), valor_aprobado='|'.join(['SI']*n_pos))
                     
-                    campos_exitoso = {
-                        'EstadoFinalFase_4': 'Exitoso',
-                        'ResultadoFinalAntesEventos': f"PROCESADO{sufijo_contado}"
-                    }
-                    actualizar_bd_cxp(cx, registro_id, campos_exitoso)
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'NombreEmisor', val_orden_de_compra=nom_sap, valor_xml=nom_xml, valor_aprobado='|'.join(['SI']*n_pos))
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'Posicion', val_orden_de_compra='|'.join([str(p) for p in pos_maestro]), valor_aprobado='|'.join(['SI']*n_pos))
                     
-                    # Actualizar tabla comparativa con todos los datos exitosos
-                    n_posiciones = len(posiciones_maestro)
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'ValorPorCalcularPosicion', val_orden_de_compra='|'.join([str(vals_unit[i]) for i in range(n_pos)]), valor_aprobado='|'.join(['SI']*n_pos))
                     
-                    # LineExtensionAmount
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='LineExtensionAmount',
-                        val_orden_de_compra=str(suma_valores_unitario),
-                        valores_comercializados=[str(suma_valores_unitario)],
-                        actualizar_valor_xml=True, valor_xml=str(valor_a_pagar),
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
+                    if any(v>0 for v in vals_me):
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, 'ValorPorCalcularMEPosicion', val_orden_de_compra='|'.join([str(vals_me[i]) for i in range(n_pos) if vals_me[i]>0]), valor_aprobado='|'.join(['SI']*n_pos))
+
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'TRM', val_orden_de_compra='|'.join([str(trm_sap)]*n_pos), valor_xml=str(trm_xml), valor_aprobado='|'.join(['SI']*n_pos))
                     
-                    # VlrPagarCop
-                    vlr_pagar_final = suma_valores_me if suma_valores_me > 0 else suma_valores_unitario
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='VlrPagarCop',
-                        val_orden_de_compra=str(vlr_pagar_final),
-                        valores_comercializados=[str(vlr_pagar_final)],
-                        actualizar_valor_xml=True, valor_xml=str(vlr_pagar_cop if vlr_pagar_cop > 0 else valor_a_pagar),
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
+                    actualizar_items_comparativa(registro, cx, nit, num_fac, 'ValorPorCalcularSAP', val_orden_de_compra='|'.join([str(normalizar_decimal(datos_hist.get(p, {}).get('PorCalcular', 0))) for p in pos_maestro]), valor_aprobado='|'.join(['SI']*n_pos))
                     
-                    # Nombre emisor
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='NombreEmisor', # Corregido
-                        val_orden_de_compra=nombre_proveedor_sap,
-                        actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
+                    campos_hist = [('TipoNIF', 'TipoNif'), ('Acreedor', 'Acreedor'), ('FecDoc', 'FecDoc'), ('FecReg', 'FecReg'), ('FechaContGasto', 'FecContGasto'), ('IndicadorImpuestos', 'IndicadorImpuestos'), ('TextoBreve', 'TextoBreve'), ('ClaseImpuesto', 'ClaseDeImpuesto'), ('Cuenta', 'Cuenta'), ('CiudadProveedor', 'CiudadProveedor'), ('DocFIEntrada', 'DocFiEntrada'), ('CTA26', 'Cuenta26')]
                     
-                    # Posiciones
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='Posicion',
-                        val_orden_de_compra='|'.join([str(p) for p in posiciones_maestro]),
-                        valores_comercializados=[str(p) for p in posiciones_maestro],
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
-                    
-                    # Valor PorCalcular_hoc de la posición
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='ValorPorCalcularPosicion', # Corregido
-                        val_orden_de_compra='|'.join([str(valores_unitario[i]) for i in range(n_posiciones)]),
-                        valores_comercializados=[str(valores_unitario[i]) for i in range(n_posiciones)],
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
-                    
-                    # Valor PorCalcular_hoc ME de la posición (si aplica)
-                    if any(v > 0 for v in valores_me):
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='ValorPorCalcularMEPosicion', # Corregido (Assuming this is the item name for ME Posicion)
-                            val_orden_de_compra='|'.join([str(valores_me[i]) for i in range(n_posiciones) if valores_me[i] > 0]),
-                            valores_comercializados=[str(valores_me[i]) for i in range(n_posiciones) if valores_me[i] > 0],
-                            actualizar_aprobado=True, valor_aprobado='SI'
-                        )
-                    
-                    # TRM
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='TRM',
-                        val_orden_de_compra='|'.join([str(trm_sap)] * n_posiciones),
-                        actualizar_valor_xml=True, valor_xml=str(trm_xml),
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
-                    
-                    # Valor PorCalcular_hoc SAP
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='ValorPorCalcularSAP', # Corregido
-                        val_orden_de_compra='|'.join([str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PorCalcular', 0)))
-                                      for p in posiciones_maestro]),
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
-                    
-                    # Campos adicionales del histórico (uno por cada posición)
-                    campos_historico = [
-                        ('TipoNIF', 'TipoNif'),
-                        ('Acreedor', 'Acreedor'),
-                        ('FecDoc', 'FecDoc'),
-                        ('FecReg', 'FecReg'),
-                        ('FechaContGasto', 'FecContGasto'),
-                        ('IndicadorImpuestos', 'IndicadorImpuestos'),
-                        ('TextoBreve', 'TextoBreve'),
-                        ('ClaseImpuesto', 'ClaseDeImpuesto'),
-                        ('Cuenta', 'Cuenta'),
-                        ('CiudadProveedor', 'CiudadProveedor'),
-                        ('DocFIEntrada', 'DocFiEntrada'),
-                        ('CTA26', 'Cuenta26')
-                    ]
-                    
-                    for nombre_item, campo_historico in campos_historico:
-                        actualizar_items_comparativa(
-                            registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item=nombre_item,
-                            val_orden_de_compra='|'.join([safe_str(datos_historico_por_posicion.get(p, {}).get(campo_historico, ''))
-                                          for p in posiciones_maestro]),
-                            actualizar_aprobado=True, valor_aprobado='SI'
-                        )
-                    
-                    # Cantidad y precio
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='PrecioUnitarioProducto', # Corregido
-                        val_orden_de_compra='|'.join([str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('PrecioUnitario', 0)))
-                                      for p in posiciones_maestro]),
-                        actualizar_valor_xml=True, valor_xml=str(precio_xml),
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
-                    
-                    actualizar_items_comparativa(
-                        registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                        nombre_item='CantidadProducto', # Corregido
-                        val_orden_de_compra='|'.join([str(normalizar_decimal(datos_historico_por_posicion.get(p, {}).get('CantPedido', 0)))
-                                      for p in posiciones_maestro]),
-                        actualizar_valor_xml=True, valor_xml=str(cantidad_xml),
-                        actualizar_aprobado=True, valor_aprobado='SI'
-                    )
-                    
-                    actualizar_estado_comparativa(cx, nit, numero_factura, f"PROCESADO{sufijo_contado}")
-                    
-                    registros_exitosos += 1
-                    registros_procesados += 1
+                    for item, field in campos_hist:
+                        val = '|'.join([safe_str(datos_hist.get(p, {}).get(field, '')) for p in pos_maestro])
+                        actualizar_items_comparativa(registro, cx, nit, num_fac, item, val_orden_de_compra=val, valor_aprobado='|'.join(['SI']*n_pos))
+
+                    actualizar_estado_comparativa(cx, nit, num_fac, f"PROCESADO{sufijo}")
+                    cnt_ok += 1; cnt_proc += 1
                     
                 except Exception as e:
-                    print(f"[ERROR] Error procesando registro {idx}: {str(e)}")
-                    print(traceback.format_exc())
+                    print(f"Error {str(e)}")
+                    cnt_nov += 1; cnt_proc += 1
                     
-                    registros_con_novedad += 1
-                    registros_procesados += 1
-                    continue
-        
-        # Fin del procesamiento
-        tiempo_total = time.time() - t_inicio
-        
-        print("")
-        print("=" * 80)
-        print("[FIN] Procesamiento ZVEN/50 - Comercializados completado")
-        print("=" * 80)
-        print("[ESTADISTICAS]")
-        print(f"  Total registros procesados: {registros_procesados}")
-        print(f"  Exitosos: {registros_exitosos}")
-        print(f"  Con novedad: {registros_con_novedad}")
-        print(f"  En espera: {registros_en_espera}")
-        print(f"  Tiempo total: {round(tiempo_total, 2)}s")
-        print("=" * 80)
-        
-        resumen = f"Procesados {registros_procesados} registros ZVEN/50. Exitosos: {registros_exitosos}, Con novedad: {registros_con_novedad}, En espera: {registros_en_espera}"
-        
-        #SetVar("vLocStrResultadoSP", "True")
-        #SetVar("vLocStrResumenSP", resumen)
+        print(f"FIN: {cnt_proc} procesados. OK: {cnt_ok}, NOV: {cnt_nov}, ESP: {cnt_esp}")
         
     except Exception as e:
-        exc_type = type(e).__name__
-        print("")
-        print("=" * 80)
-        print("[ERROR CRITICO] La funcion ZVEN_ValidarComercializados fallo")
-        print("=" * 80)
-        print(f"[ERROR] Tipo de error: {exc_type}")
-        print(f"[ERROR] Mensaje: {str(e)}")
-        print("[ERROR] Traceback completo:")
-        print(traceback.format_exc())
-        print("=" * 80)
-        
-        #SetVar("vGblStrDetalleError", traceback.format_exc())
-        #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
-        #SetVar("vLocStrResultadoSP", "False")
-
-
+        print(f"CRITICO: {str(e)}")

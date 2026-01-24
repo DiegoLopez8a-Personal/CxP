@@ -2,34 +2,7 @@ def ZPSA_ZPSS_ValidarServicios():
     """
     Función para procesar las validaciones de ZPSA/ZPSS/43 (Pedidos de Servicios).
     
-    VERSIÓN: 2.0 - Refactorizado para alinearse con ZPAF
-    
-    FLUJO PRINCIPAL:
-        1. Lee registros de [CxP].[HU41_CandidatosValidacion] con ClaseDePedido_hoc IN ('ZPSA', 'ZPSS', '43')
-        2. Para cada registro:
-           a. Determina si es USD o no (campo Moneda_hoc)
-           b. Si USD: compara VlrPagarCop vs PorCalcular_hoc
-           c. Si NO USD: compara Valor de la Compra LEA vs PorCalcular_hoc
-           d. Valida TRM (tolerancia 0.01)
-           e. Valida Nombre Emisor (Lógica ZPAF: palabras coincidentes sin importar orden)
-           f. Valida según campo Orden:
-              - Si tiene Orden 15: Indicador, Centro coste vacío, Cuenta=5199150001, Clase orden
-              - Si tiene Orden 53: Centro coste con valor (ESTADÍSTICAS)
-              - Si tiene Orden diferente: Centro coste vacío, Cuenta=5299150099 o inicia con 7
-           g. Si no tiene Orden, valida Elemento PEP:
-              - Indicador, Centro coste vacío, Cuenta=5199150001, Emplazamiento
-           h. Si no tiene Elemento PEP, valida Activo Fijo:
-              - Si inicia con 2000 (DIFERIDO): Indicador C1/FA/VP/CO/CR, Centro/Cuenta vacíos
-              - Si no tiene Activo Fijo (GENERALES): Cuenta e Indicador diligenciados,
-                Centro coste diligenciado, validar contra archivo Impuestos especiales
-        3. Actualiza [CxP].[DocumentsProcessing] con estados y observaciones
-        4. Genera trazabilidad en [dbo].[CxP.Comparativa]
-    
-    NOTA IMPORTANTE SOBRE PaymentMeans:
-        - Si PaymentMeans = '01', se agrega ' CONTADO' al resultado final
-    
-    Returns:
-        None: Actualiza variables globales en RocketBot
+    VERSIÓN: 2.2 - Broadcasting de Aprobaciones y Cast String
     """
     
     # =========================================================================
@@ -211,7 +184,7 @@ def ZPSA_ZPSS_ValidarServicios():
                     pass
     
     # =========================================================================
-    # FUNCIONES DE NORMALIZACIÓN DE NOMBRES (ZPAF LOGIC)
+    # FUNCIONES DE NORMALIZACIÓN DE NOMBRES
     # =========================================================================
     
     def normalizar_nombre_empresa(nombre):
@@ -257,9 +230,18 @@ def ZPSA_ZPSS_ValidarServicios():
         return sorted(lista_xml) == sorted(lista_sap)
     
     # =========================================================================
-    # FUNCIONES DE VALIDACION DE VALORES (ZPAF LOGIC)
+    # FUNCIONES DE VALIDACION
     # =========================================================================
     
+    def validar_tolerancia_numerica(valor1, valor2, tolerancia=500):
+        """Valida si dos valores numéricos están dentro del rango de tolerancia."""
+        try:
+            val1 = normalizar_decimal(valor1)
+            val2 = normalizar_decimal(valor2)
+            return abs(val1 - val2) <= tolerancia
+        except:
+            return False
+
     def comparar_suma_total(valores_por_calcular, valor_objetivo, tolerancia=500):
         """
         Suma TODOS los valores de la lista y compara si el total coincide
@@ -534,27 +516,15 @@ def ZPSA_ZPSS_ValidarServicios():
         cur.execute(update_sql, (estado, nit, factura))
         cur.close()
     
-    def marcar_posiciones_procesadas(cx, doc_compra, posiciones_string):
-        """Marca posiciones en Trans_Candidatos_HU41 como PROCESADO (LOGICA ZPAF)."""
+    def marcar_posiciones_procesadas(cx, doc_compra):
+        """Marca posiciones en Trans_Candidatos_HU41 como PROCESADO."""
         cur = cx.cursor()
-
-        # 1. Hacemos el split de las posiciones
-        lista_posiciones = posiciones_string.split('|')
-
-        # 2. Preparamos el SQL de actualización
-        update_query = """
-        UPDATE [CxP].[HistoricoOrdenesCompra]
-        SET Marca = 'PROCESADO'
-        WHERE DocCompra = ? AND Posicion = ?
+        update_sql = """
+        UPDATE [CxP].[Trans_Candidatos_HU41]
+        SET Marca_hoc = 'PROCESADO'
+        WHERE DocCompra_hoc = ?
         """
-
-        # 3. Iteramos solo por las posiciones que llegaron y ejecutamos el UPDATE
-        for posicion in lista_posiciones:
-            pos = posicion.strip()
-            if pos:
-                cur.execute(update_query, (doc_compra, pos))
-
-        cx.commit()
+        cur.execute(update_sql, (doc_compra,))
         cur.close()
         print(f"[UPDATE] Marcado como PROCESADO - OC {doc_compra}")
     
@@ -653,24 +623,26 @@ def ZPSA_ZPSS_ValidarServicios():
                                   datos_posiciones, valor_xml, valor_sap, es_usd):
         """Genera la trazabilidad base en CxP_Comparativa."""
         datos_filtrados = [d for d in datos_posiciones if d['Posicion'] in posiciones_usadas]
+        n_pos = len(datos_filtrados)
         
         nombre_campo_valor = 'VlrPagarCop' if es_usd else 'LineExtensionAmount'
         
-        # Valor principal
+        # Valor principal (Se emite una vez, pero la aprobación se broadcastea para consistencia si es necesario)
+        # Ojo: Si el valor XML es escalar, lo dejamos tal cual. Aprobado 'SI' broadcasteado.
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item=nombre_campo_valor,
             val_orden_de_compra=None,
             actualizar_valor_xml=True, valor_xml=str(valor_xml),
-            actualizar_aprobado=True, valor_aprobado='SI'
+            actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
         )
         
-        # Posiciones
+        # Posiciones (CAST TO STRING HERE)
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='Posicion',
-            val_orden_de_compra='|'.join([d['Posicion'] for d in datos_filtrados]),
-            actualizar_aprobado=True, valor_aprobado='SI'
+            val_orden_de_compra='|'.join([str(d['Posicion']) for d in datos_filtrados]),
+            actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
         )
         
         # Valor PorCalcular_hoc SAP
@@ -678,7 +650,7 @@ def ZPSA_ZPSS_ValidarServicios():
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='ValorPorCalcularSAP',
             val_orden_de_compra='|'.join([str(normalizar_decimal(d['PorCalcular'])) for d in datos_filtrados]),
-            actualizar_aprobado=True, valor_aprobado='SI'
+            actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
         )
         
         # Campos básicos del histórico
@@ -699,7 +671,7 @@ def ZPSA_ZPSS_ValidarServicios():
                 registro=registro, cx=cx, nit=nit, factura=factura,
                 nombre_item=nombre_item,
                 val_orden_de_compra='|'.join([safe_str(d.get(campo_historico, '')) for d in datos_filtrados]),
-                actualizar_aprobado=True, valor_aprobado='SI'
+                actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
             )
         
         # Campos específicos de servicios
@@ -718,7 +690,7 @@ def ZPSA_ZPSS_ValidarServicios():
                 registro=registro, cx=cx, nit=nit, factura=factura,
                 nombre_item=nombre_item,
                 val_orden_de_compra='|'.join([safe_str(d.get(campo_historico, '')) for d in datos_filtrados]),
-                actualizar_aprobado=True, valor_aprobado='SI'
+                actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
             )
     
     def generar_trazabilidad_sin_coincidencia(cx, registro, registro_id, nit, factura, valor_xml, es_usd, observacion):
@@ -872,7 +844,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         resultado_final = f"CON NOVEDAD{sufijo_contado}"
                         
                         campos_novedad = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                            'EstadoFinalFase_4': 'Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': resultado_final
                         }
@@ -906,7 +878,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         resultado_final = f"CON NOVEDAD{sufijo_contado}"
                         
                         campos_novedad = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                            'EstadoFinalFase_4': 'Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': resultado_final
                         }
@@ -916,7 +888,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             cx, registro, registro_id, nit, numero_factura, valor_xml, es_usd, observacion
                         )
                         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        marcar_posiciones_procesadas(cx, numero_oc)
                         
                         registros_con_novedad += 1
                         registros_procesados += 1
@@ -938,6 +910,7 @@ def ZPSA_ZPSS_ValidarServicios():
                     # 9. Validar TRM (LOGICA ZPAF: 0.01 tolerancia)
                     trm_xml = normalizar_decimal(registro.get('CalculationRate_dp', 0))
                     trm_sap = normalizar_decimal(datos_posiciones_usadas[0].get('Trm', 0))
+                    n_pos = len(posiciones_usadas)
                     
                     if es_usd and (trm_xml > 0 or trm_sap > 0):
                         trm_coincide = abs(trm_xml - trm_sap) < 0.01
@@ -948,7 +921,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_trm = {
-                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                                'EstadoFinalFase_4': 'Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -957,17 +930,17 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
-                                val_orden_de_compra='|'.join([str(trm_sap)] * len(posiciones_usadas)),
+                                val_orden_de_compra='|'.join([str(trm_sap)] * n_pos),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
-                                actualizar_aprobado=True, valor_aprobado='NO'
+                                actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos)
                             )
                         else:
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
-                                val_orden_de_compra='|'.join([str(trm_sap)] * len(posiciones_usadas)),
+                                val_orden_de_compra='|'.join([str(trm_sap)] * n_pos),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
-                                actualizar_aprobado=True, valor_aprobado='SI'
+                                actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
                             )
                     
                     # 10. Validar Nombre Emisor (LOGICA ZPAF)
@@ -982,7 +955,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         hay_novedad = True
                         
                         campos_novedad_nombre = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                            'EstadoFinalFase_4': 'Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
@@ -993,7 +966,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             nombre_item='NombreEmisor', # Corregido nombre item
                             val_orden_de_compra=nombre_proveedor_sap,
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
-                            actualizar_aprobado=True, valor_aprobado='NO'
+                            actualizar_aprobado=True, valor_aprobado='|'.join(['NO'] * n_pos)
                         )
                     else:
                         actualizar_items_comparativa(
@@ -1001,7 +974,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             nombre_item='NombreEmisor', # Corregido nombre item
                             val_orden_de_compra=nombre_proveedor_sap,
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
-                            actualizar_aprobado=True, valor_aprobado='SI'
+                            actualizar_aprobado=True, valor_aprobado='|'.join(['SI'] * n_pos)
                         )
                     
                     # =========================================================
@@ -1060,7 +1033,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='IndicadorImpuestos', # Corregido segun lista
                                 val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_indicador
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_indicador)
                             )
                             
                             # ORDEN 15: Centro de coste debe estar VACÍO
@@ -1090,7 +1063,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='CentroCoste', # Corregido segun lista
                                 val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_centro
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_centro)
                             )
                             
                             # ORDEN 15: Cuenta debe ser 5199150001
@@ -1120,7 +1093,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Cuenta',
                                 val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_cuenta)
                             )
                             
                             # ORDEN 15: Clase orden según indicador
@@ -1156,7 +1129,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='ClaseOrden', # Corregido segun lista
                                 val_orden_de_compra='|'.join([safe_str(d.get('ClaseOrden', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_clase
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_clase)
                             )
                         
                         else:
@@ -1192,7 +1165,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='CentroCoste', # Corregido segun lista
                                     val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
-                                    actualizar_aprobado=True, valor_aprobado=aprobados_centro
+                                    actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_centro)
                                 )
                             
                             else:
@@ -1225,7 +1198,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='CentroCoste', # Corregido segun lista
                                     val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
-                                    actualizar_aprobado=True, valor_aprobado=aprobados_centro
+                                    actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_centro)
                                 )
                                 
                                 # ORDEN DIFERENTE: Cuenta debe ser 5299150099 O iniciar con 7 y 10 dígitos
@@ -1255,7 +1228,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='Cuenta',
                                     val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
-                                    actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
+                                    actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_cuenta)
                                 )
                     
                     # =========================================================
@@ -1295,7 +1268,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='IndicadorImpuestos', # Corregido segun lista
                             val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_indicador
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_indicador)
                         )
                         
                         # Centro de coste debe estar VACÍO
@@ -1325,7 +1298,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='CentroCoste', # Corregido segun lista
                             val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_centro
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_centro)
                         )
                         
                         # Cuenta debe ser 5199150001
@@ -1355,7 +1328,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cuenta',
                             val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_cuenta)
                         )
                         
                         # Emplazamiento según indicador
@@ -1391,7 +1364,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Emplazamiento',
                             val_orden_de_compra='|'.join([safe_str(d.get('Emplazamiento', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_empl
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_empl)
                         )
                     
                     # =========================================================
@@ -1440,7 +1413,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='IndicadorImpuestos', # Corregido segun lista
                                 val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_indicador
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_indicador)
                             )
                             
                             # DIFERIDO: Centro de coste debe estar VACÍO
@@ -1470,7 +1443,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='CentroCoste', # Corregido segun lista
                                 val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_centro
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_centro)
                             )
                             
                             # DIFERIDO: Cuenta debe estar VACÍO
@@ -1500,7 +1473,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Cuenta',
                                 val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
-                                actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
+                                actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_cuenta)
                             )
                     
                     # =========================================================
@@ -1536,7 +1509,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cuenta',
                             val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_cuenta)
                         )
                         
                         # GENERALES: Indicador impuestos debe estar diligenciado
@@ -1566,7 +1539,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='IndicadorImpuestos', # Corregido segun lista
                             val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_indicador
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_indicador)
                         )
                         
                         # GENERALES: Centro de coste debe estar diligenciado
@@ -1596,7 +1569,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='CentroCoste', # Corregido segun lista
                             val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
-                            actualizar_aprobado=True, valor_aprobado=aprobados_centro
+                            actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_centro)
                         )
                         
                         # GENERALES: Validar indicador contra archivo Impuestos especiales
@@ -1640,7 +1613,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='IndicadorImpuestos', # Corregido segun lista
                                     val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
-                                    actualizar_aprobado=True, valor_aprobado=aprobados_indicador_ceco
+                                    actualizar_aprobado=True, valor_aprobado='|'.join(aprobados_indicador_ceco)
                                 )
                     
                     # =========================================================
@@ -1651,7 +1624,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         registros_con_novedad += 1
                     else:
                         doc_compra = safe_str(registro.get('DocCompra_hoc', ''))
-                        marcar_posiciones_procesadas(cx, doc_compra, safe_str(registro['Posicion_hoc']))
+                        marcar_posiciones_procesadas(cx, doc_compra)
                         
                         campos_exitoso = {
                             'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
@@ -1715,20 +1688,3 @@ def ZPSA_ZPSS_ValidarServicios():
         #SetVar("vGblStrDetalleError", traceback.format_exc())
         #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         #SetVar("vLocStrResultadoSP", "False")
-
-
-# Mock para pruebas locales
-if __name__ == "__main__":
-    _mock_vars = {}
-    def GetVar(name):
-        return _mock_vars.get(name, "")
-    def #SetVar(name, value):
-        _mock_vars[name] = value
-        print(f"[#SetVar] {name} = {value}")
-    
-    _mock_vars["vLocDicConfig"] = '{"ServidorBaseDatos":"localhost","NombreBaseDatos":"NotificationsPaddy"}'
-    _mock_vars["vGblStrUsuarioBaseDatos"] = "sa"
-    _mock_vars["vGblStrClaveBaseDatos"] = "password"
-    
-    print("Ejecutando prueba local...")
-    # ZPSA_ZPSS_ValidarServicios()
