@@ -5,7 +5,7 @@ def ZPSA_ZPSS_ValidarServicios():
     VERSIÓN: 1.0 - 12 Enero 2026
     
     FLUJO PRINCIPAL:
-        1. Lee registros de [CxP].[Trans_Candidatos_HU41] con ClaseDePedido_hoc IN ('ZPSA', 'ZPSS', '43')
+        1. Lee registros de [CxP].[HU41_CandidatosValidacion] con ClaseDePedido_hoc IN ('ZPSA', 'ZPSS', '43')
         2. Para cada registro:
            a. Determina si es USD o no (campo Moneda_hoc)
            b. Si USD: compara VlrPagarCop vs PorCalcular_hoc
@@ -130,16 +130,33 @@ def ZPSA_ZPSS_ValidarServicios():
     
     @contextmanager
     def crear_conexion_db(cfg, max_retries=3):
-        """Crea conexión a la base de datos con reintentos."""
+        """
+        Crea conexión a la base de datos con reintentos y manejo de transacciones.
+
+        Args:
+            cfg: Diccionario de configuración con ServidorBaseDatos y NombreBaseDatos
+            max_retries: Número máximo de reintentos
+
+        Yields:
+            pyodbc.Connection: Conexión a la base de datos
+
+        Raises:
+            ValueError: Si faltan parámetros de configuración
+            pyodbc.Error: Si falla la conexión después de todos los reintentos
+        """
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
         if missing:
             raise ValueError(f"Parametros faltantes: {', '.join(missing)}")
 
-        usuario = GetVar("vGblStrUsuarioBaseDatos")
-        contrasena = GetVar("vGblStrClaveBaseDatos")
+        usuario = cfg['UsuarioBaseDatos']
+        contrasena = cfg['ClaveBaseDatos']
         
-        conn_str = (
+        # Estrategia de conexion:
+        # 1. Intentar con Usuario y Contraseña (para Produccion)
+        # 2. Si falla, intentar con Trusted Connection (para Desarrollo/Windows Auth)
+
+        conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
             f"DATABASE={cfg['NombreBaseDatos']};"
@@ -148,19 +165,52 @@ def ZPSA_ZPSS_ValidarServicios():
             "autocommit=False;"
         )
         
+        conn_str_trusted = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={cfg['ServidorBaseDatos']};"
+            f"DATABASE={cfg['NombreBaseDatos']};"
+            "Trusted_Connection=yes;"
+            "autocommit=False;"
+        )
+
         cx = None
-        for attempt in range(max_retries):
-            try:
-                cx = pyodbc.connect(conn_str, timeout=30)
-                cx.autocommit = False
-                print(f"[DEBUG] Conexion SQL abierta (intento {attempt + 1})")
-                break
-            except pyodbc.Error as e:
-                if attempt < max_retries - 1:
-                    print(f"[WARNING] Intento {attempt + 1} fallido, reintentando...")
-                    time.sleep(1 * (attempt + 1))
-                    continue
-                raise
+        conectado = False
+        excepcion_final = None
+
+        # Intento 1: Autenticacion SQL
+        ########################
+        # print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
+        # for attempt in range(max_retries):
+        #     try:
+        #         cx = pyodbc.connect(conn_str_auth, timeout=30)
+        #         cx.autocommit = False
+        #         conectado = True
+        #         print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
+        #         break
+        #     except pyodbc.Error as e:
+        #         print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+        #         excepcion_final = e
+        #         if attempt < max_retries - 1:
+        #             time.sleep(1)
+
+        # Intento 2: Trusted Connection (si fallo el anterior)
+        if not conectado:
+            print("[DEBUG] Intentando conexion Trusted Connection (Windows Auth)...")
+            for attempt in range(max_retries):
+                try:
+                    cx = pyodbc.connect(conn_str_trusted, timeout=30)
+                    cx.autocommit = False
+                    conectado = True
+                    print(f"[DEBUG] Conexion SQL (Trusted) abierta exitosamente (intento {attempt + 1})")
+                    break
+                except pyodbc.Error as e:
+                    print(f"[WARNING] Fallo conexion Trusted Connection (intento {attempt + 1}): {str(e)}")
+                    excepcion_final = e
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+
+        if not conectado:
+            raise excepcion_final or Exception("No se pudo conectar a la base de datos con ningun metodo")
         
         try:
             yield cx
@@ -404,15 +454,28 @@ def ZPSA_ZPSS_ValidarServicios():
     # =========================================================================
     
     def actualizar_bd_cxp(cx, registro_id, campos_actualizar):
-        """Actualiza campos en [CxP].[DocumentsProcessing]."""
+        """
+        Actualiza campos en [CxP].[DocumentsProcessing].
+
+        IMPORTANTE: DocumentsProcessing NO tiene sufijos _dp en sus columnas.
+
+        Para ObservacionesFase_4: Conserva observaciones previas separadas por coma,
+        pero prima la última observación.
+
+        Args:
+            cx: Conexión a la base de datos
+            registro_id: ID del registro a actualizar
+            campos_actualizar: Diccionario {nombre_campo: valor}
+        """
         try:
             sets = []
             parametros = []
             
             for campo, valor in campos_actualizar.items():
                 if valor is not None:
+                    # Manejo especial para ObservacionesFase_4 (concatenar)
                     if campo == 'ObservacionesFase_4':
-                        sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE ? + ', ' + [{campo}] END")
+                        sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE [{campo}] + ', ' + ? END")
                         parametros.extend([valor, valor])
                     else:
                         sets.append(f"[{campo}] = ?")
@@ -424,104 +487,119 @@ def ZPSA_ZPSS_ValidarServicios():
                 
                 cur = cx.cursor()
                 cur.execute(sql, parametros)
+                affected_rows = cur.rowcount
                 cur.close()
                 
-                print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
+                if affected_rows > 0:
+                    print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
+                else:
+                    print(f"[WARNING] No se encontro registro ID {registro_id} en DocumentsProcessing")
             
         except Exception as e:
             print(f"[ERROR] Error actualizando DocumentsProcessing: {str(e)}")
             raise
     
-    def actualizar_items_comparativa(id_reg, cx, nit, factura, nombre_item, valores_lista,
-                                     actualizar_valor_xml=False, valor_xml=None,
-                                     actualizar_aprobado=False, valor_aprobado=None):
-        """Actualiza o inserta items en [dbo].[CxP.Comparativa]."""
+    def actualizar_items_comparativa(registro, cx, nit, factura, nombre_item,
+                                 actualizar_valor_xml=True, valor_xml=None,
+                                 actualizar_aprobado=True, valor_aprobado=None,
+                                 actualizar_orden_compra=True, val_orden_de_compra=None):
+        """
+        Actualiza o inserta items en [dbo].[CxP.Comparativa].
+        """
         cur = cx.cursor()
         
+        def safe_db_val(v):
+            """Convierte strings vacios o 'None' a None real para BD"""
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s or s.lower() == 'none' or s.lower() == 'null':
+                return None
+            return s
+
+        # 1. Contar items existentes
         query_count = """
-        SELECT COUNT(*) FROM [dbo].[CxP.Comparativa]
-        WHERE NIT = ? AND Factura = ? AND Item = ?
+        SELECT COUNT(*)
+        FROM [dbo].[CxP.Comparativa]
+        WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
-        cur.execute(query_count, (nit, factura, nombre_item))
-        count_actual = cur.fetchone()[0]
+        # Se agregó ID_registro para ser precisos con la agrupación
+        cur.execute(query_count, (nit, factura, nombre_item, registro['ID_dp']))
+        count_existentes = cur.fetchone()[0]
+
+        # 2. Manejo seguro de los Splits (convirtiendo None a lista vacía)
+        lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
+        lista_xml = valor_xml.split('|') if valor_xml else []
+        lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
         
-        count_necesario = len(valores_lista)
-        
+        # En caso de que valor_aprobado sea una lista y no un string
         if isinstance(valor_aprobado, list):
-            aprobados_lista = valor_aprobado
-        else:
-            aprobados_lista = [valor_aprobado] * count_necesario
+             lista_aprob = valor_aprobado
+
+        # 3. Obtener el máximo conteo
+        maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
+        count_nuevos = maximo_conteo # Corregido: Ya es un entero, no necesita len()
         
-        if count_actual == 0:
-            for i, valor in enumerate(valores_lista):
+        maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
+
+        # Iterar sobre los valores nuevos para actualizar o insertar
+        for i in range(maximo_conteo):
+            # Extraer item de forma segura (si no existe índice, es None)
+            item_compra = lista_compra[i] if i < len(lista_compra) else None
+            item_xml = lista_xml[i] if i < len(lista_xml) else None
+            item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
+
+            # Limpiar valores para la BD
+            val_compra = safe_db_val(item_compra)
+            val_xml = safe_db_val(item_xml)
+            val_aprob = safe_db_val(item_aprob)
+
+            if i < count_existentes:
+                # UPDATE: Construcción dinámica de la consulta
+                set_clauses = []
+                params = []
+
+                if actualizar_orden_compra:
+                    set_clauses.append("Valor_Orden_de_Compra = ?")
+                    params.append(val_compra)
+                if actualizar_valor_xml:
+                    set_clauses.append("Valor_XML = ?")
+                    params.append(val_xml)
+                if actualizar_aprobado:
+                    set_clauses.append("Aprobado = ?")
+                    params.append(val_aprob)
+
+                # Si no hay nada que actualizar, continuamos al siguiente ciclo
+                if not set_clauses:
+                    continue
+
+                update_query = f"""
+                WITH CTE AS (
+                    SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
+                        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
+                    FROM [dbo].[CxP.Comparativa]
+                    WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
+                )
+                UPDATE CTE
+                SET {", ".join(set_clauses)}
+                WHERE rn = ?
+                """
+                # Los parámetros del WHERE van antes del rn
+                final_params = params + [nit, factura, nombre_item, registro['ID_dp'], i + 1]
+                cur.execute(update_query, final_params)
+
+            else:
+                # INSERT: Corregido el número de parámetros (ahora son 7)
                 insert_query = """
                 INSERT INTO [dbo].[CxP.Comparativa] (
-                    ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
+                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
                     Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                vxml = valor_xml if actualizar_valor_xml else None
-                vaprob = aprobados_lista[i] if actualizar_aprobado and i < len(aprobados_lista) else None
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, valor, vxml, vaprob))
-        
-        elif count_actual < count_necesario:
-            for i in range(count_actual):
-                update_query = "UPDATE [dbo].[CxP.Comparativa] SET Valor_Orden_de_Compra = ?"
-                params = [valores_lista[i]]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(valor_xml)
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(aprobados_lista[i] if i < len(aprobados_lista) else None)
-                
-                update_query += """
-                WHERE NIT = ? AND Factura = ? AND Item = ?
-                  AND ID_registro IN (
-                    SELECT TOP 1 ID_registro FROM [dbo].[CxP.Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ?
-                    ORDER BY ID_registro OFFSET ? ROWS
-                  )
-                """
-                params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
-                cur.execute(update_query, params)
-            
-            for i in range(count_actual, count_necesario):
-                insert_query = """
-                INSERT INTO [dbo].[CxP.Comparativa] (
-                    ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
-                    Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """
-                vxml = valor_xml if actualizar_valor_xml else None
-                vaprob = aprobados_lista[i] if actualizar_aprobado and i < len(aprobados_lista) else None
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, valores_lista[i], vxml, vaprob))
-        
-        else:
-            for i, valor in enumerate(valores_lista):
-                update_query = "UPDATE [dbo].[CxP.Comparativa] SET Valor_Orden_de_Compra = ?"
-                params = [valor]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(valor_xml)
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(aprobados_lista[i] if i < len(aprobados_lista) else None)
-                
-                update_query += """
-                WHERE NIT = ? AND Factura = ? AND Item = ?
-                  AND ID_registro IN (
-                    SELECT TOP 1 ID_registro FROM [dbo].[CxP.Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ?
-                    ORDER BY ID_registro OFFSET ? ROWS
-                  )
-                """
-                params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
-                cur.execute(update_query, params)
+                cur.execute(insert_query, (registro['Fecha_de_retoma_antes_de_contabilizacion_dp'],registro['documenttype_dp'],registro['numero_de_liquidacion_u_orden_de_compra_dp'],registro['nombre_emisor_dp'], registro['ID_dp'], nit, factura, nombre_item, val_compra, val_xml, val_aprob))
         
         cur.close()
+        print(f"[PROCESADO] Item '{nombre_item}' - {count_nuevos} valor(es) enviados (Existían: {count_existentes})")
     
     def actualizar_estado_comparativa(cx, nit, factura, estado):
         """Actualiza el Estado_validacion_antes_de_eventos en CxP_Comparativa."""
@@ -637,7 +715,7 @@ def ZPSA_ZPSS_ValidarServicios():
     # FUNCIONES DE TRAZABILIDAD
     # =========================================================================
     
-    def generar_trazabilidad_base(cx, registro_id, nit, factura, posiciones_usadas,
+    def generar_trazabilidad_base(cx, registro, registro_id, nit, factura, posiciones_usadas,
                                   datos_posiciones, valor_xml, valor_sap, es_usd):
         """Genera la trazabilidad base en CxP_Comparativa."""
         datos_filtrados = [d for d in datos_posiciones if d['Posicion'] in posiciones_usadas]
@@ -648,7 +726,7 @@ def ZPSA_ZPSS_ValidarServicios():
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item=nombre_campo_valor,
-            valores_lista=[str(valor_sap)],
+            val_orden_de_compra=None, # No aplica para este item especifico en esta logica o se pasa diferente
             actualizar_valor_xml=True, valor_xml=str(valor_xml),
             actualizar_aprobado=True, valor_aprobado='SI'
         )
@@ -657,15 +735,15 @@ def ZPSA_ZPSS_ValidarServicios():
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='Posicion',
-            valores_lista=[d['Posicion'] for d in datos_filtrados],
+            val_orden_de_compra='|'.join([d['Posicion'] for d in datos_filtrados]),
             actualizar_aprobado=True, valor_aprobado='SI'
         )
         
         # Valor PorCalcular_hoc SAP
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
-            nombre_item='Valor PorCalcular_hoc SAP',
-            valores_lista=[str(normalizar_decimal(d['PorCalcular'])) for d in datos_filtrados],
+            nombre_item='ValorPorCalcularSAP', # Corregido nombre segun lista usuario
+            val_orden_de_compra='|'.join([str(normalizar_decimal(d['PorCalcular'])) for d in datos_filtrados]),
             actualizar_aprobado=True, valor_aprobado='SI'
         )
         
@@ -686,18 +764,18 @@ def ZPSA_ZPSS_ValidarServicios():
             actualizar_items_comparativa(
                 registro=registro, cx=cx, nit=nit, factura=factura,
                 nombre_item=nombre_item,
-                valores_lista=[safe_str(d.get(campo_historico, '')) for d in datos_filtrados],
+                val_orden_de_compra='|'.join([safe_str(d.get(campo_historico, '')) for d in datos_filtrados]),
                 actualizar_aprobado=True, valor_aprobado='SI'
             )
         
         # Campos específicos de servicios
         campos_servicios = [
-            ('Poblacion Servicio', 'PoblacionServicio'),
-            ('Activo fijo', 'ActivoFijo'),
+            ('PoblacionServicio', 'PoblacionServicio'), # Corregido segun lista
+            ('ActivoFijo', 'ActivoFijo'), # Corregido segun lista
             ('Orden', 'Orden'),
-            ('Centro de coste', 'CentroCoste'),
-            ('Clase orden', 'ClaseOrden'),
-            ('Elemento PEP', 'ElementoPEP'),
+            ('CentroCoste', 'CentroCoste'), # Corregido segun lista
+            ('ClaseOrden', 'ClaseOrden'), # Corregido segun lista
+            ('ElementoPEP', 'ElementoPEP'),
             ('Emplazamiento', 'Emplazamiento'),
         ]
         
@@ -705,18 +783,18 @@ def ZPSA_ZPSS_ValidarServicios():
             actualizar_items_comparativa(
                 registro=registro, cx=cx, nit=nit, factura=factura,
                 nombre_item=nombre_item,
-                valores_lista=[safe_str(d.get(campo_historico, '')) for d in datos_filtrados],
+                val_orden_de_compra='|'.join([safe_str(d.get(campo_historico, '')) for d in datos_filtrados]),
                 actualizar_aprobado=True, valor_aprobado='SI'
             )
     
-    def generar_trazabilidad_sin_coincidencia(cx, registro_id, nit, factura, valor_xml, es_usd, observacion):
+    def generar_trazabilidad_sin_coincidencia(cx, registro, registro_id, nit, factura, valor_xml, es_usd, observacion):
         """Genera la trazabilidad cuando NO hay coincidencia de valores."""
         nombre_campo_valor = 'VlrPagarCop' if es_usd else 'LineExtensionAmount'
         
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item=nombre_campo_valor,
-            valores_lista=['NO ENCONTRADO'],
+            val_orden_de_compra='NO ENCONTRADO',
             actualizar_valor_xml=True, valor_xml=str(valor_xml),
             actualizar_aprobado=True, valor_aprobado='NO'
         )
@@ -724,7 +802,7 @@ def ZPSA_ZPSS_ValidarServicios():
         actualizar_items_comparativa(
             registro=registro, cx=cx, nit=nit, factura=factura,
             nombre_item='Observaciones',
-            valores_lista=[''],
+            val_orden_de_compra=None,
             actualizar_valor_xml=True, valor_xml=observacion
         )
     
@@ -815,10 +893,8 @@ def ZPSA_ZPSS_ValidarServicios():
             print("[INFO] Obteniendo registros ZPSA/ZPSS/43 para procesar...")
             
             query_zpsa = """
-                SELECT * FROM [CxP].[Trans_Candidatos_HU41]
+                SELECT * FROM [CxP].[HU41_CandidatosValidacion]
                 WHERE [ClaseDePedido_hoc] IN ('ZPSA', 'ZPSS', '43')
-                  AND (Marca_hoc IS NULL OR Marca_hoc <> 'PROCESADO')
-                ORDER BY [executionDate_dp] DESC
             """
             
             df_registros = pd.read_sql(query_zpsa, cx)
@@ -862,7 +938,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         resultado_final = f"CON NOVEDAD{sufijo_contado}"
                         
                         campos_novedad = {
-                            'EstadoFinalFase_4': 'Exitoso',
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': resultado_final
                         }
@@ -896,14 +972,14 @@ def ZPSA_ZPSS_ValidarServicios():
                         resultado_final = f"CON NOVEDAD{sufijo_contado}"
                         
                         campos_novedad = {
-                            'EstadoFinalFase_4': 'Exitoso',
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': resultado_final
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad)
                         
                         generar_trazabilidad_sin_coincidencia(
-                            cx, registro_id, nit, numero_factura, valor_xml, es_usd, observacion
+                            cx, registro, registro_id, nit, numero_factura, valor_xml, es_usd, observacion
                         )
                         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
                         
@@ -918,7 +994,7 @@ def ZPSA_ZPSS_ValidarServicios():
                     
                     # 8. Generar trazabilidad base
                     generar_trazabilidad_base(
-                        cx, registro_id, nit, numero_factura, posiciones_usadas,
+                        cx, registro, registro_id, nit, numero_factura, posiciones_usadas,
                         datos_posiciones, valor_xml, suma_encontrada, es_usd
                     )
                     
@@ -937,6 +1013,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_trm = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -945,7 +1022,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
-                                valores_lista=[str(trm_sap)] * len(posiciones_usadas),
+                                val_orden_de_compra='|'.join([str(trm_sap)] * len(posiciones_usadas)),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
                                 actualizar_aprobado=True, valor_aprobado='NO'
                             )
@@ -953,7 +1030,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='TRM',
-                                valores_lista=[str(trm_sap)] * len(posiciones_usadas),
+                                val_orden_de_compra='|'.join([str(trm_sap)] * len(posiciones_usadas)),
                                 actualizar_valor_xml=True, valor_xml=str(trm_xml),
                                 actualizar_aprobado=True, valor_aprobado='SI'
                             )
@@ -970,6 +1047,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         hay_novedad = True
                         
                         campos_novedad_nombre = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                         }
@@ -977,16 +1055,16 @@ def ZPSA_ZPSS_ValidarServicios():
                         
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Nombre emisor',
-                            valores_lista=[nombre_proveedor_sap],
+                            nombre_item='NombreEmisor', # Corregido nombre item
+                            val_orden_de_compra=nombre_proveedor_sap,
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
                             actualizar_aprobado=True, valor_aprobado='NO'
                         )
                     else:
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Nombre emisor',
-                            valores_lista=[nombre_proveedor_sap],
+                            nombre_item='NombreEmisor', # Corregido nombre item
+                            val_orden_de_compra=nombre_proveedor_sap,
                             actualizar_valor_xml=True, valor_xml=nombre_emisor_xml,
                             actualizar_aprobado=True, valor_aprobado='SI'
                         )
@@ -1037,6 +1115,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_ind = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1044,8 +1123,8 @@ def ZPSA_ZPSS_ValidarServicios():
                             
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='Indicador impuestos',
-                                valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
+                                nombre_item='IndicadorImpuestos', # Corregido segun lista
+                                val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_indicador
                             )
                             
@@ -1066,6 +1145,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_centro = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1073,8 +1153,8 @@ def ZPSA_ZPSS_ValidarServicios():
                             
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='Centro de coste',
-                                valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
+                                nombre_item='CentroCoste', # Corregido segun lista
+                                val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_centro
                             )
                             
@@ -1095,6 +1175,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_cuenta = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1103,7 +1184,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Cuenta',
-                                valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
+                                val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
                             )
                             
@@ -1130,6 +1211,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_clase = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1137,8 +1219,8 @@ def ZPSA_ZPSS_ValidarServicios():
                             
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='Clase orden',
-                                valores_lista=[safe_str(d.get('ClaseOrden', '')) for d in datos_posiciones_usadas],
+                                nombre_item='ClaseOrden', # Corregido segun lista
+                                val_orden_de_compra='|'.join([safe_str(d.get('ClaseOrden', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_clase
                             )
                         
@@ -1165,6 +1247,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     hay_novedad = True
                                     
                                     campos_novedad_centro = {
+                                        'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                         'ObservacionesFase_4': truncar_observacion(observacion),
                                         'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                     }
@@ -1172,8 +1255,8 @@ def ZPSA_ZPSS_ValidarServicios():
                                 
                                 actualizar_items_comparativa(
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                    nombre_item='Centro de coste',
-                                    valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
+                                    nombre_item='CentroCoste', # Corregido segun lista
+                                    val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
                                     actualizar_aprobado=True, valor_aprobado=aprobados_centro
                                 )
                             
@@ -1197,6 +1280,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     hay_novedad = True
                                     
                                     campos_novedad_centro = {
+                                        'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                         'ObservacionesFase_4': truncar_observacion(observacion),
                                         'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                     }
@@ -1204,8 +1288,8 @@ def ZPSA_ZPSS_ValidarServicios():
                                 
                                 actualizar_items_comparativa(
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                    nombre_item='Centro de coste',
-                                    valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
+                                    nombre_item='CentroCoste', # Corregido segun lista
+                                    val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
                                     actualizar_aprobado=True, valor_aprobado=aprobados_centro
                                 )
                                 
@@ -1226,6 +1310,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                     hay_novedad = True
                                     
                                     campos_novedad_cuenta = {
+                                        'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                         'ObservacionesFase_4': truncar_observacion(observacion),
                                         'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                     }
@@ -1234,7 +1319,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 actualizar_items_comparativa(
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                     nombre_item='Cuenta',
-                                    valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
+                                    val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
                                     actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
                                 )
                     
@@ -1265,6 +1350,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_ind = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1272,8 +1358,8 @@ def ZPSA_ZPSS_ValidarServicios():
                         
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Indicador impuestos',
-                            valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
+                            nombre_item='IndicadorImpuestos', # Corregido segun lista
+                            val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_indicador
                         )
                         
@@ -1294,6 +1380,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_centro = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1301,8 +1388,8 @@ def ZPSA_ZPSS_ValidarServicios():
                         
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Centro de coste',
-                            valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
+                            nombre_item='CentroCoste', # Corregido segun lista
+                            val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_centro
                         )
                         
@@ -1323,6 +1410,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_cuenta = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1331,7 +1419,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cuenta',
-                            valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
+                            val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
                         )
                         
@@ -1358,6 +1446,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_empl = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1366,7 +1455,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Emplazamiento',
-                            valores_lista=[safe_str(d.get('Emplazamiento', '')) for d in datos_posiciones_usadas],
+                            val_orden_de_compra='|'.join([safe_str(d.get('Emplazamiento', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_empl
                         )
                     
@@ -1406,6 +1495,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_ind = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1413,8 +1503,8 @@ def ZPSA_ZPSS_ValidarServicios():
                             
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='Indicador impuestos',
-                                valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
+                                nombre_item='IndicadorImpuestos', # Corregido segun lista
+                                val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_indicador
                             )
                             
@@ -1435,6 +1525,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_centro = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1442,8 +1533,8 @@ def ZPSA_ZPSS_ValidarServicios():
                             
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                nombre_item='Centro de coste',
-                                valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
+                                nombre_item='CentroCoste', # Corregido segun lista
+                                val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_centro
                             )
                             
@@ -1464,6 +1555,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_cuenta = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1472,7 +1564,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             actualizar_items_comparativa(
                                 registro=registro, cx=cx, nit=nit, factura=numero_factura,
                                 nombre_item='Cuenta',
-                                valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
+                                val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
                                 actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
                             )
                     
@@ -1499,6 +1591,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_cuenta = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1507,7 +1600,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
                             nombre_item='Cuenta',
-                            valores_lista=[safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas],
+                            val_orden_de_compra='|'.join([safe_str(d.get('Cuenta', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_cuenta
                         )
                         
@@ -1528,6 +1621,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_ind = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1535,8 +1629,8 @@ def ZPSA_ZPSS_ValidarServicios():
                         
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Indicador impuestos',
-                            valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
+                            nombre_item='IndicadorImpuestos', # Corregido segun lista
+                            val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_indicador
                         )
                         
@@ -1557,6 +1651,7 @@ def ZPSA_ZPSS_ValidarServicios():
                             hay_novedad = True
                             
                             campos_novedad_centro = {
+                                'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                 'ObservacionesFase_4': truncar_observacion(observacion),
                                 'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                             }
@@ -1564,8 +1659,8 @@ def ZPSA_ZPSS_ValidarServicios():
                         
                         actualizar_items_comparativa(
                             registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                            nombre_item='Centro de coste',
-                            valores_lista=[safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas],
+                            nombre_item='CentroCoste', # Corregido segun lista
+                            val_orden_de_compra='|'.join([safe_str(d.get('CentroCoste', '')) for d in datos_posiciones_usadas]),
                             actualizar_aprobado=True, valor_aprobado=aprobados_centro
                         )
                         
@@ -1599,6 +1694,7 @@ def ZPSA_ZPSS_ValidarServicios():
                                 hay_novedad = True
                                 
                                 campos_novedad_ind_ceco = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
                                 }
@@ -1607,8 +1703,8 @@ def ZPSA_ZPSS_ValidarServicios():
                                 # Actualizar aprobación de indicador con resultado de VALIDACION CECO
                                 actualizar_items_comparativa(
                                     registro=registro, cx=cx, nit=nit, factura=numero_factura,
-                                    nombre_item='Indicador impuestos',
-                                    valores_lista=[safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas],
+                                    nombre_item='IndicadorImpuestos', # Corregido segun lista
+                                    val_orden_de_compra='|'.join([safe_str(d.get('IndicadorImpuestos', '')) for d in datos_posiciones_usadas]),
                                     actualizar_aprobado=True, valor_aprobado=aprobados_indicador_ceco
                                 )
                     
@@ -1623,7 +1719,7 @@ def ZPSA_ZPSS_ValidarServicios():
                         marcar_posiciones_procesadas(cx, doc_compra)
                         
                         campos_exitoso = {
-                            'EstadoFinalFase_4': 'Exitoso',
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
                             'ResultadoFinalAntesEventos': f"PROCESADO{sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_exitoso)
@@ -1681,8 +1777,8 @@ def ZPSA_ZPSS_ValidarServicios():
         print(traceback.format_exc())
         print("=" * 80)
         
-        #SetVar("vGblStrDetalleError", str(e))
-        #SetVar("vGblStrSystemError", traceback.format_exc())
+        #SetVar("vGblStrDetalleError", traceback.format_exc())
+        #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         #SetVar("vLocStrResultadoSP", "False")
 
 

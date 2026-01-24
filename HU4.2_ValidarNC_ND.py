@@ -19,14 +19,6 @@ def HU42_ValidarNotasCreditoDebito():
         2. Validar campos receptor
         3. Marcar como Exitoso
     
-    ESTRUCTURA TRAZABILIDAD NC (12 columnas):
-        Fecha ejecución, Fecha retoma, ID ejecución, ID Registro, NIT, 
-        Nombre Proveedor, Nota Credito, Item, Valor XML, Valor Factura, Aprobado, Estado
-    
-    ESTRUCTURA TRAZABILIDAD ND (10 columnas):
-        Fecha ejecución, ID ejecución, ID Registro, NIT, Nombre Proveedor, 
-        Nota Debito, Item, Valor XML, Aprobado, Estado
-    
     Returns:
         None: Actualiza variables globales en RocketBot
     """
@@ -145,7 +137,9 @@ def HU42_ValidarNotasCreditoDebito():
     
     @contextmanager
     def crear_conexion_db(cfg, max_retries=3):
-        """Crea conexión a la base de datos con reintentos."""
+        """
+        Crea conexión a la base de datos con reintentos y manejo de transacciones.
+        """
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
         if missing:
@@ -154,7 +148,7 @@ def HU42_ValidarNotasCreditoDebito():
         usuario = GetVar("vGblStrUsuarioBaseDatos")
         contrasena = GetVar("vGblStrClaveBaseDatos")
         
-        conn_str = (
+        conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
             f"DATABASE={cfg['NombreBaseDatos']};"
@@ -163,19 +157,50 @@ def HU42_ValidarNotasCreditoDebito():
             "autocommit=False;"
         )
         
+        conn_str_trusted = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={cfg['ServidorBaseDatos']};"
+            f"DATABASE={cfg['NombreBaseDatos']};"
+            "Trusted_Connection=yes;"
+            "autocommit=False;"
+        )
+
         cx = None
-        for attempt in range(max_retries):
-            try:
-                cx = pyodbc.connect(conn_str, timeout=30)
-                cx.autocommit = False
-                print(f"[DEBUG] Conexion SQL abierta (intento {attempt + 1})")
-                break
-            except pyodbc.Error as e:
-                if attempt < max_retries - 1:
-                    print(f"[WARNING] Intento {attempt + 1} fallido, reintentando...")
-                    time.sleep(1 * (attempt + 1))
-                    continue
-                raise
+        conectado = False
+        excepcion_final = None
+
+        # Intento 1: Autenticacion SQL
+        # for attempt in range(max_retries):
+        #     try:
+        #         cx = pyodbc.connect(conn_str_auth, timeout=30)
+        #         cx.autocommit = False
+        #         conectado = True
+        #         print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
+        #         break
+        #     except pyodbc.Error as e:
+        #         print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+        #         excepcion_final = e
+        #         if attempt < max_retries - 1:
+        #             time.sleep(1)
+
+        # Intento 2: Trusted Connection
+        if not conectado:
+            print("[DEBUG] Intentando conexion Trusted Connection (Windows Auth)...")
+            for attempt in range(max_retries):
+                try:
+                    cx = pyodbc.connect(conn_str_trusted, timeout=30)
+                    cx.autocommit = False
+                    conectado = True
+                    print(f"[DEBUG] Conexion SQL (Trusted) abierta exitosamente (intento {attempt + 1})")
+                    break
+                except pyodbc.Error as e:
+                    print(f"[WARNING] Fallo conexion Trusted Connection (intento {attempt + 1}): {str(e)}")
+                    excepcion_final = e
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+
+        if not conectado:
+            raise excepcion_final or Exception("No se pudo conectar a la base de datos con ningun metodo")
         
         try:
             yield cx
@@ -200,34 +225,19 @@ def HU42_ValidarNotasCreditoDebito():
     # =========================================================================
     
     def validar_nombre_receptor(nombre):
-        """
-        Valida que el nombre receptor sea DIANA CORPORACIÓN SAS o variantes permitidas.
-        
-        Variantes permitidas:
-            - DIANA CORPORACIÓN SAS (con o sin tilde)
-            - DIANA CORPORACION S.A.S., S. A. S., S A S, etc.
-            - DICORP SAS y variantes
-            - No debe contener información adicional después
-        
-        Returns:
-            bool: True si es válido
-        """
+        """Valida que el nombre receptor sea DIANA CORPORACIÓN SAS o variantes permitidas."""
         if campo_vacio(nombre):
             return False
         
         nombre_str = safe_str(nombre).upper().strip()
         nombre_sin_tilde = quitar_tildes(nombre_str)
-        
-        # Limpiar puntuación y espacios para comparación
         nombre_limpio = re.sub(r'[,.\s]', '', nombre_sin_tilde)
         
-        # Patrones válidos (sin tildes, sin puntuación)
         patrones_validos = [
             'DIANACORPORACIONSAS',
             'DICORPSAS'
         ]
         
-        # Verificar que coincida exactamente con algún patrón
         for patron in patrones_validos:
             if nombre_limpio == patron:
                 return True
@@ -237,7 +247,6 @@ def HU42_ValidarNotasCreditoDebito():
     def validar_nit_receptor(nit):
         """Valida que NIT receptor sea 860031606."""
         nit_str = safe_str(nit).strip()
-        # Limpiar cualquier caracter no numérico
         nit_limpio = re.sub(r'\D', '', nit_str)
         return nit_limpio == '860031606'
     
@@ -252,18 +261,13 @@ def HU42_ValidarNotasCreditoDebito():
         return digito_str == '6'
     
     def validar_tax_level_code(tax_code):
-        """
-        Valida que TaxLevelCode esté dentro del estándar.
-        Valores permitidos: O-13, O-15, O-23, O-47, R-99-PN
-        """
+        """Valida que TaxLevelCode esté dentro del estándar."""
         if campo_vacio(tax_code):
             return False
         
         tax_str = safe_str(tax_code).upper().strip()
-        
         valores_permitidos = ['O-13', 'O-15', 'O-23', 'O-47', 'R-99-PN']
         
-        # Verificar si contiene alguno de los valores permitidos
         for valor in valores_permitidos:
             if valor in tax_str:
                 return True
@@ -274,7 +278,6 @@ def HU42_ValidarNotasCreditoDebito():
         """Calcula la diferencia en días entre dos fechas."""
         try:
             if isinstance(fecha_inicio, str):
-                # Intentar varios formatos
                 for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%Y-%m-%d %H:%M:%S']:
                     try:
                         fecha_inicio = datetime.strptime(fecha_inicio, fmt)
@@ -310,7 +313,6 @@ def HU42_ValidarNotasCreditoDebito():
             for campo, valor in campos_actualizar.items():
                 if valor is not None:
                     if campo == 'ObservacionesFase_4':
-                        # Añadir al inicio, conservando observaciones previas
                         sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE ? + ', ' + [{campo}] END")
                         parametros.extend([valor, valor])
                     else:
@@ -346,158 +348,113 @@ def HU42_ValidarNotasCreditoDebito():
         except Exception as e:
             print(f"[ERROR] Error actualizando NotaCreditoReferenciada: {str(e)}")
     
-    def insertar_trazabilidad_nc(cx, datos_traza):
+    def actualizar_items_comparativa(registro, cx, nit, factura, nombre_item,
+                                 actualizar_valor_xml=True, valor_xml=None,
+                                 actualizar_aprobado=True, valor_aprobado=None,
+                                 actualizar_orden_compra=True, val_orden_de_compra=None):
         """
-        Inserta registro en tabla de trazabilidad para NC.
-        
-        Estructura: Fecha ejecución, Fecha retoma, ID ejecución, ID Registro, 
-                    NIT, Nombre Proveedor, Nota Credito, Item, Valor XML, 
-                    Valor Factura, Aprobado, Estado
+        Actualiza o inserta items en [dbo].[CxP.Comparativa].
+        Adpated logic from ZPAF.
+        Here 'factura' parameter will hold the NC/ND number as Document ID.
+        'val_orden_de_compra' will hold the Reference Value or SAP value if applicable.
         """
-        try:
-            cur = cx.cursor()
-            
-            sql = """
-            INSERT INTO [CxP].[Comparativa_NC] (
-                FechaEjecucion, FechaRetoma, IDEjecucion, IDRegistro,
-                NIT, NombreProveedor, NotaCredito, Item, ValorXML,
-                ValorFactura, Aprobado, Estado
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            
-            cur.execute(sql, (
-                datos_traza.get('FechaEjecucion'),
-                datos_traza.get('FechaRetoma'),
-                datos_traza.get('IDEjecucion'),
-                datos_traza.get('IDRegistro'),
-                datos_traza.get('NIT'),
-                datos_traza.get('NombreProveedor'),
-                datos_traza.get('NotaCredito'),
-                datos_traza.get('Item'),
-                datos_traza.get('ValorXML'),
-                datos_traza.get('ValorFactura'),
-                datos_traza.get('Aprobado'),
-                datos_traza.get('Estado')
-            ))
-            
-            cur.close()
-            
-        except Exception as e:
-            print(f"[ERROR] Error insertando trazabilidad NC: {str(e)}")
-    
-    def insertar_trazabilidad_nd(cx, datos_traza):
+        cur = cx.cursor()
+        
+        def safe_db_val(v):
+            if v is None: return None
+            s = str(v).strip()
+            if not s or s.lower() == 'none' or s.lower() == 'null': return None
+            return s
+
+        # Contar items existentes - Note: We use 'ID_registro' to scope to the NC/ND
+        # 'ID_dp' is expected in registro dict.
+        registro_id = registro.get('ID', '') # In DocumentsProcessing table it is ID
+        
+        # Check if ID key exists, if not try ID_dp (compatibility)
+        if not registro_id and 'ID_dp' in registro:
+            registro_id = registro['ID_dp']
+
+        query_count = """
+        SELECT COUNT(*)
+        FROM [dbo].[CxP.Comparativa]
+        WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
-        Inserta registro en tabla de trazabilidad para ND.
+        cur.execute(query_count, (nit, factura, nombre_item, registro_id))
+        count_existentes = cur.fetchone()[0]
+
+        # Handle list vs string inputs (ZPAF expects strings with | usually, but we might pass scalars)
+        # We wrap in list to loop
+        lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
+        lista_xml = valor_xml.split('|') if valor_xml else []
+        lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
+
+        maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
+        maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
+
+        for i in range(maximo_conteo):
+            item_compra = lista_compra[i] if i < len(lista_compra) else None
+            item_xml = lista_xml[i] if i < len(lista_xml) else None
+            item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
+
+            val_compra = safe_db_val(item_compra)
+            val_xml = safe_db_val(item_xml)
+            val_aprob = safe_db_val(item_aprob)
+
+            if i < count_existentes:
+                set_clauses = []
+                params = []
+                if actualizar_orden_compra:
+                    set_clauses.append("Valor_Orden_de_Compra = ?")
+                    params.append(val_compra)
+                if actualizar_valor_xml:
+                    set_clauses.append("Valor_XML = ?")
+                    params.append(val_xml)
+                if actualizar_aprobado:
+                    set_clauses.append("Aprobado = ?")
+                    params.append(val_aprob)
+
+                if not set_clauses: continue
+
+                update_query = f"""
+                WITH CTE AS (
+                    SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
+                        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
+                    FROM [dbo].[CxP.Comparativa]
+                    WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
+                )
+                UPDATE CTE
+                SET {", ".join(set_clauses)}
+                WHERE rn = ?
+                """
+                final_params = params + [nit, factura, nombre_item, registro_id, i + 1]
+                cur.execute(update_query, final_params)
+            else:
+                # Need extra fields for INSERT.
+                # ZPAF uses keys like 'Fecha_de_retoma_antes_de_contabilizacion_dp', 'documenttype_dp'.
+                # In NC/ND from DocumentsProcessing, keys are different.
+                # We map available data or pass defaults.
+
+                fecha_retoma = registro.get('fecha_de_retoma', '')
+                tipo_doc = registro.get('tipo_de_documento', '')
+                orden_compra = '' # NC/ND usually don't have OC in this context
+                nombre_prov = registro.get('nombre_emisor', '')
+
+                insert_query = """
+                INSERT INTO [dbo].[CxP.Comparativa] (
+                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra,
+                    Nombre_Proveedor, ID_registro, NIT, Factura, Item,
+                    Valor_Orden_de_Compra, Valor_XML, Aprobado
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                cur.execute(insert_query, (
+                    fecha_retoma, tipo_doc, orden_compra, nombre_prov,
+                    registro_id, nit, factura, nombre_item,
+                    val_compra, val_xml, val_aprob
+                ))
         
-        Estructura: Fecha ejecución, ID ejecución, ID Registro, NIT, 
-                    Nombre Proveedor, Nota Debito, Item, Valor XML, Aprobado, Estado
-        """
-        try:
-            cur = cx.cursor()
-            
-            sql = """
-            INSERT INTO [CxP].[Comparativa_ND] (
-                FechaEjecucion, IDEjecucion, IDRegistro,
-                NIT, NombreProveedor, NotaDebito, Item, ValorXML,
-                Aprobado, Estado
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-            
-            cur.execute(sql, (
-                datos_traza.get('FechaEjecucion'),
-                datos_traza.get('IDEjecucion'),
-                datos_traza.get('IDRegistro'),
-                datos_traza.get('NIT'),
-                datos_traza.get('NombreProveedor'),
-                datos_traza.get('NotaDebito'),
-                datos_traza.get('Item'),
-                datos_traza.get('ValorXML'),
-                datos_traza.get('Aprobado'),
-                datos_traza.get('Estado')
-            ))
-            
-            cur.close()
-            
-        except Exception as e:
-            print(f"[ERROR] Error insertando trazabilidad ND: {str(e)}")
-    
-    # =========================================================================
-    # FUNCIONES DE GENERACIÓN DE TRAZABILIDAD
-    # =========================================================================
-    
-    def generar_trazabilidad_nc(cx, registro, id_ejecucion, fecha_ejecucion, items_validacion, estado_final):
-        """
-        Genera todos los items de trazabilidad para una NC.
-        
-        Items estándar:
-            1. Nombre Emisor
-            2. NIT Emisor
-            3. Nombre Receptor
-            4. Nit Receptor
-            5. Tipo Persona Receptor
-            6. DigitoVerificacion Receptor
-            7. TaxLevelCode Receptor
-            8. Fecha emisión del documento
-            9. LineExtensionAmount
-            10. Tipo de nota crédito
-            11. Referencia
-            12. Código CUFE de la factura
-            13. Cude de la Nota Credito
-            14. ActualizacionNombreArchivos
-            15. RutaRespaldo
-            16. Observaciones
-        """
-        registro_id = safe_str(registro.get('ID', ''))
-        nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor', ''))
-        nombre_proveedor = safe_str(registro.get('nombre_emisor', ''))
-        nota_credito = safe_str(registro.get('numero_de_nota_credito', ''))
-        fecha_retoma = registro.get('fecha_de_retoma', fecha_ejecucion)
-        
-        datos_base = {
-            'FechaEjecucion': fecha_ejecucion,
-            'FechaRetoma': fecha_retoma,
-            'IDEjecucion': id_ejecucion,
-            'IDRegistro': registro_id,
-            'NIT': nit,
-            'NombreProveedor': nombre_proveedor,
-            'NotaCredito': nota_credito,
-            'Estado': estado_final
-        }
-        
-        for item_nombre, item_data in items_validacion.items():
-            datos_item = datos_base.copy()
-            datos_item['Item'] = item_nombre
-            datos_item['ValorXML'] = item_data.get('valor_xml', '')
-            datos_item['ValorFactura'] = item_data.get('valor_factura', '')
-            datos_item['Aprobado'] = item_data.get('aprobado', '')
-            
-            insertar_trazabilidad_nc(cx, datos_item)
-    
-    def generar_trazabilidad_nd(cx, registro, id_ejecucion, fecha_ejecucion, items_validacion, estado_final):
-        """Genera todos los items de trazabilidad para una ND."""
-        registro_id = safe_str(registro.get('ID', ''))
-        nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor', ''))
-        nombre_proveedor = safe_str(registro.get('nombre_emisor', ''))
-        nota_debito = safe_str(registro.get('numero_de_nota_debito', ''))
-        
-        datos_base = {
-            'FechaEjecucion': fecha_ejecucion,
-            'IDEjecucion': id_ejecucion,
-            'IDRegistro': registro_id,
-            'NIT': nit,
-            'NombreProveedor': nombre_proveedor,
-            'NotaDebito': nota_debito,
-            'Estado': estado_final
-        }
-        
-        for item_nombre, item_data in items_validacion.items():
-            datos_item = datos_base.copy()
-            datos_item['Item'] = item_nombre
-            datos_item['ValorXML'] = item_data.get('valor_xml', '')
-            datos_item['Aprobado'] = item_data.get('aprobado', '')
-            
-            insertar_trazabilidad_nd(cx, datos_item)
-    
+        cur.close()
+        print(f"[PROCESADO] Item '{nombre_item}' - {count_nuevos if 'count_nuevos' in locals() else maximo_conteo} valor(es)")
+
     # =========================================================================
     # FUNCIONES DE BÚSQUEDA DE FACTURAS
     # =========================================================================
@@ -505,19 +462,8 @@ def HU42_ValidarNotasCreditoDebito():
     def buscar_factura_correspondiente(cx, nit, referencia, fecha_ejecucion):
         """
         Busca la factura FV correspondiente a la NC.
-        
-        Criterios:
-            - Fecha emisión <= 1 mes atrás vs fecha ejecución
-            - Mismo NIT
-            - Referencia = Número de factura
-            - Prioridad: RECHAZADO > APROBADO
-            - Sin Nota crédito referenciada
-        
-        Returns:
-            dict o None: Datos de la factura encontrada
         """
         try:
-            # Calcular fecha límite (1 mes atrás)
             if isinstance(fecha_ejecucion, str):
                 for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%Y-%m-%d %H:%M:%S']:
                     try:
@@ -526,13 +472,11 @@ def HU42_ValidarNotasCreditoDebito():
                     except:
                         continue
             
-            # Primer día del mes anterior
             primer_dia_mes_actual = fecha_ejecucion.replace(day=1)
             primer_dia_mes_anterior = (primer_dia_mes_actual - timedelta(days=1)).replace(day=1)
             
             cur = cx.cursor()
             
-            # Query para buscar FV con prioridad RECHAZADO > APROBADO
             query = """
             SELECT TOP 1 *
             FROM [CxP].[DocumentsProcessing]
@@ -571,42 +515,27 @@ def HU42_ValidarNotasCreditoDebito():
     # =========================================================================
     
     def generar_insumo_retorno_nc(registros_novedad, ruta_insumo):
-        """
-        Genera el archivo Reporte_de_Retorno_Bot.xlsx para NC con novedad.
-        
-        Columnas:
-            - ID
-            - Fecha_Carga
-            - Nit
-            - Numero_Nota_Crédito
-            - Estado_CXP_Bot
-        """
+        """Genera el archivo Reporte_de_Retorno_Bot.xlsx para NC con novedad."""
         try:
             if not registros_novedad:
-                print("[INFO] No hay registros NC con novedad para generar insumo")
                 return
             
             import openpyxl
             from openpyxl import Workbook
             
-            # Crear directorio si no existe
             os.makedirs(os.path.dirname(ruta_insumo), exist_ok=True)
             
-            # Verificar si existe el archivo
             if os.path.exists(ruta_insumo):
                 wb = openpyxl.load_workbook(ruta_insumo)
             else:
                 wb = Workbook()
             
-            # Crear o acceder hoja NC
             if 'NC' in wb.sheetnames:
                 ws = wb['NC']
             else:
                 ws = wb.create_sheet('NC')
-                # Escribir encabezados
                 ws.append(['ID', 'Fecha_Carga', 'Nit', 'Numero_Nota_Credito', 'Estado_CXP_Bot'])
             
-            # Agregar registros
             fecha_carga = datetime.now().strftime('%Y-%m-%d')
             
             for reg in registros_novedad:
@@ -618,7 +547,6 @@ def HU42_ValidarNotasCreditoDebito():
                     reg.get('estado', 'CON NOVEDAD')
                 ])
             
-            # Eliminar hoja por defecto si existe y está vacía
             if 'Sheet' in wb.sheetnames:
                 del wb['Sheet']
             
@@ -640,24 +568,16 @@ def HU42_ValidarNotasCreditoDebito():
         
         t_inicio = time.time()
         
-        # 1. Obtener y validar configuración
         cfg = parse_config(GetVar("vLocDicConfig"))
         print("[INFO] Configuracion cargada exitosamente")
         
-        # Parámetros de configuración
         plazo_maximo_retoma = int(cfg.get('plazo_maximo_retoma_dias', 120))
         ruta_insumo_retorno = cfg.get('RutaInsumoRetorno', '')
-        id_ejecucion = cfg.get('IDEjecucion', str(int(time.time())))
         es_retorno_manual = cfg.get('EsRetornoManual', False)
         
         fecha_ejecucion = datetime.now()
         fecha_ejecucion_str = fecha_ejecucion.strftime('%Y-%m-%d')
         
-        print(f"[INFO] Plazo maximo retoma: {plazo_maximo_retoma} dias")
-        print(f"[INFO] ID Ejecucion: {id_ejecucion}")
-        print(f"[INFO] Es retorno manual: {es_retorno_manual}")
-        
-        # 2. Conectar a base de datos
         with crear_conexion_db(cfg) as cx:
             
             # =========================================================
@@ -668,7 +588,6 @@ def HU42_ValidarNotasCreditoDebito():
             print("[PROCESO] Procesando Notas Crédito (NC)")
             print("=" * 40)
             
-            # Query para obtener NC pendientes
             query_nc = """
                 SELECT * FROM [CxP].[DocumentsProcessing]
                 WHERE [tipo_de_documento] = 'NC'
@@ -680,11 +599,8 @@ def HU42_ValidarNotasCreditoDebito():
             df_nc = pd.read_sql(query_nc, cx)
             print(f"[INFO] Obtenidas {len(df_nc)} notas credito para procesar")
             
-            # Variables de conteo NC
             nc_procesadas = 0
-            nc_encontradas = 0
             nc_con_novedad = 0
-            nc_no_exitoso = 0
             registros_nc_novedad = []
             
             for idx, registro in df_nc.iterrows():
@@ -695,337 +611,118 @@ def HU42_ValidarNotasCreditoDebito():
                     
                     print(f"\n[NC] Procesando {nc_procesadas + 1}/{len(df_nc)}: NC {numero_nc}, NIT {nit}")
                     
-                    items_validacion = {}
-                    hay_novedad = False
-                    estado_final = None
-                    
-                    # =====================================================
-                    # PASO 1: Validar fecha de retoma (si no es retorno manual)
-                    # =====================================================
-                    
+                    # 1. Validar retoma
                     if not es_retorno_manual:
                         fecha_retoma = registro.get('fecha_de_retoma')
-                        
                         if campo_con_valor(fecha_retoma):
-                            # Calcular días transcurridos
-                            dias_transcurridos = calcular_dias_diferencia(fecha_retoma, fecha_ejecucion)
-                            
-                            if dias_transcurridos > plazo_maximo_retoma:
-                                print(f"[INFO] NC {numero_nc} excede plazo maximo ({dias_transcurridos} > {plazo_maximo_retoma} dias)")
-                                
-                                # Marcar como No exitoso
+                            dias = calcular_dias_diferencia(fecha_retoma, fecha_ejecucion)
+                            if dias > plazo_maximo_retoma:
+                                print(f"[INFO] NC {numero_nc} excede plazo")
                                 observacion = "Registro excede el plazo maximo de retoma"
+                                actualizar_bd_cxp(cx, registro_id, {'EstadoFinalFase_4':'No exitoso', 'ObservacionesFase_4':observacion, 'ResultadoFinalAntesEventos':'No exitoso'})
                                 
-                                campos_actualizar = {
-                                    'EstadoFinalFase_4': 'No exitoso',
-                                    'ObservacionesFase_4': observacion,
-                                    'ResultadoFinalAntesEventos': 'No exitoso'
-                                }
-                                actualizar_bd_cxp(cx, registro_id, campos_actualizar)
-                                
-                                # Trazabilidad
-                                items_validacion['Observaciones'] = {
-                                    'valor_xml': observacion,
-                                    'valor_factura': '',
-                                    'aprobado': ''
-                                }
-                                
-                                generar_trazabilidad_nc(cx, registro, id_ejecucion, fecha_ejecucion_str, items_validacion, 'No exitoso')
-                                
-                                nc_no_exitoso += 1
+                                actualizar_items_comparativa(registro, cx, nit, numero_nc, 'Observaciones', valor_xml=observacion, val_orden_de_compra=None)
                                 nc_procesadas += 1
                                 continue
                         else:
-                            # Registrar fecha de retoma si no tiene
                             cur = cx.cursor()
-                            cur.execute("""
-                                UPDATE [CxP].[DocumentsProcessing]
-                                SET [fecha_de_retoma] = ?
-                                WHERE [ID] = ?
-                            """, (fecha_ejecucion_str, registro_id))
+                            cur.execute("UPDATE [CxP].[DocumentsProcessing] SET [fecha_de_retoma] = ? WHERE [ID] = ?", (fecha_ejecucion_str, registro_id))
                             cur.close()
                     
-                    # =====================================================
-                    # PASO 2: Validar campos básicos (Nombre Emisor, NIT, Fecha)
-                    # =====================================================
+                    # Validaciones
+                    items_val = {}
                     
-                    nombre_emisor = safe_str(registro.get('nombre_emisor', ''))
-                    nit_emisor = safe_str(registro.get('nit_emisor_o_nit_del_proveedor', ''))
-                    fecha_emision = safe_str(registro.get('fecha_de_emision_documento', ''))
+                    # Emisor
+                    items_val['NombreEmisor'] = {'xml': safe_str(registro.get('nombre_emisor', '')), 'ok': 'SI' if campo_con_valor(registro.get('nombre_emisor', '')) else 'NO'}
+                    items_val['NITEmisor'] = {'xml': safe_str(registro.get('nit_emisor_o_nit_del_proveedor', '')), 'ok': 'SI' if campo_con_valor(registro.get('nit_emisor_o_nit_del_proveedor', '')) else 'NO'}
+                    items_val['FechaEmisionDocumento'] = {'xml': safe_str(registro.get('fecha_de_emision_documento', '')), 'ok': 'SI' if campo_con_valor(registro.get('fecha_de_emision_documento', '')) else 'NO'}
                     
-                    # Nombre Emisor
-                    items_validacion['Nombre Emisor'] = {
-                        'valor_xml': nombre_emisor,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if campo_con_valor(nombre_emisor) else 'NO'
-                    }
+                    # Receptor
+                    items_val['NombreReceptor'] = {'xml': safe_str(registro.get('nombre_del_adquiriente', '')), 'ok': 'SI' if validar_nombre_receptor(registro.get('nombre_del_adquiriente', '')) else 'NO'}
+                    items_val['NitReceptor'] = {'xml': safe_str(registro.get('nit_del_adquiriente', '')), 'ok': 'SI' if validar_nit_receptor(registro.get('nit_del_adquiriente', '')) else 'NO'}
+                    items_val['TipoPersonaReceptor'] = {'xml': safe_str(registro.get('tipo_persona', '')), 'ok': 'SI' if validar_tipo_persona(registro.get('tipo_persona', '')) else 'NO'}
+                    items_val['DigitoVerificacionReceptor'] = {'xml': safe_str(registro.get('digito_de_verificacion', '')), 'ok': 'SI' if validar_digito_verificacion(registro.get('digito_de_verificacion', '')) else 'NO'}
+                    items_val['TaxLevelCodeReceptor'] = {'xml': safe_str(registro.get('responsabilidad_tributaria_adquiriente', '')), 'ok': 'SI' if validar_tax_level_code(registro.get('responsabilidad_tributaria_adquiriente', '')) else 'NO'}
                     
-                    # NIT Emisor
-                    items_validacion['NIT Emisor'] = {
-                        'valor_xml': nit_emisor,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if campo_con_valor(nit_emisor) else 'NO'
-                    }
+                    # Referencia
+                    tipo_nc = safe_str(registro.get('tipo_de_nota_credito', ''))
+                    items_val['InvoiceTypecode'] = {'xml': tipo_nc, 'ok': ''} # Mapped to InvoiceTypecode
                     
-                    # Fecha emisión
-                    items_validacion['Fecha emision del documento'] = {
-                        'valor_xml': fecha_emision,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if campo_con_valor(fecha_emision) else 'NO'
-                    }
-                    
-                    # =====================================================
-                    # PASO 3: Validar campos receptor
-                    # =====================================================
-                    
-                    nombre_receptor = safe_str(registro.get('nombre_del_adquiriente', ''))
-                    nit_receptor = safe_str(registro.get('nit_del_adquiriente', ''))
-                    tipo_persona = safe_str(registro.get('tipo_persona', ''))
-                    digito_verif = safe_str(registro.get('digito_de_verificacion', ''))
-                    tax_level_code = safe_str(registro.get('responsabilidad_tributaria_adquiriente', ''))
-                    
-                    # Nombre Receptor
-                    nombre_receptor_valido = validar_nombre_receptor(nombre_receptor)
-                    items_validacion['Nombre Receptor'] = {
-                        'valor_xml': nombre_receptor,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if nombre_receptor_valido else 'NO'
-                    }
-                    
-                    # Nit Receptor
-                    nit_receptor_valido = validar_nit_receptor(nit_receptor)
-                    items_validacion['Nit Receptor'] = {
-                        'valor_xml': nit_receptor,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if nit_receptor_valido else 'NO'
-                    }
-                    
-                    # Tipo Persona Receptor
-                    tipo_persona_valido = validar_tipo_persona(tipo_persona)
-                    items_validacion['Tipo Persona Receptor'] = {
-                        'valor_xml': tipo_persona,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if tipo_persona_valido else 'NO'
-                    }
-                    
-                    # DigitoVerificacion Receptor
-                    digito_valido = validar_digito_verificacion(digito_verif)
-                    items_validacion['DigitoVerificacion Receptor'] = {
-                        'valor_xml': digito_verif,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if digito_valido else 'NO'
-                    }
-                    
-                    # TaxLevelCode Receptor
-                    tax_code_valido = validar_tax_level_code(tax_level_code)
-                    items_validacion['TaxLevelCode Receptor'] = {
-                        'valor_xml': tax_level_code,
-                        'valor_factura': '',
-                        'aprobado': 'SI' if tax_code_valido else 'NO'
-                    }
-                    
-                    # =====================================================
-                    # PASO 4: Validar referencia (Tipo nota crédito = 20)
-                    # =====================================================
-                    
-                    tipo_nota_credito = safe_str(registro.get('tipo_de_nota_credito', ''))
-                    codigo_cufe = safe_str(registro.get('codigo_cufe_de_la_factura', ''))
-                    cude_nc = safe_str(registro.get('cude_de_la_nota_credito', ''))
-                    
-                    items_validacion['Tipo de nota credito'] = {
-                        'valor_xml': tipo_nota_credito,
-                        'valor_factura': '',
-                        'aprobado': ''
-                    }
-                    
-                    resultado_final_previo = safe_str(registro.get('ResultadoFinalAntesEventos', ''))
-                    
-                    if not resultado_final_previo:
-                        # No tiene marca previa, validar tipo
-                        if tipo_nota_credito == '20':
-                            # Tiene referencia, continuar
-                            items_validacion['Codigo CUFE de la factura'] = {
-                                'valor_xml': codigo_cufe,
-                                'valor_factura': '',
-                                'aprobado': ''
-                            }
-                            items_validacion['Cude de la Nota Credito'] = {
-                                'valor_xml': cude_nc,
-                                'valor_factura': '',
-                                'aprobado': ''
-                            }
-                        else:
-                            # Sin referencia
-                            print(f"[INFO] NC {numero_nc} sin referencia (tipo {tipo_nota_credito})")
-                            
-                            observacion = "Nota credito sin referencia"
-                            
-                            campos_actualizar = {
-                                'EstadoFinalFase_4': 'Exitoso',
-                                'ObservacionesFase_4': observacion,
-                                'ResultadoFinalAntesEventos': 'Con Novedad'
-                            }
-                            actualizar_bd_cxp(cx, registro_id, campos_actualizar)
-                            
-                            items_validacion['Cude de la Nota Credito'] = {
-                                'valor_xml': cude_nc,
-                                'valor_factura': '',
-                                'aprobado': ''
-                            }
-                            items_validacion['Observaciones'] = {
-                                'valor_xml': observacion,
-                                'valor_factura': '',
-                                'aprobado': ''
-                            }
-                            
-                            generar_trazabilidad_nc(cx, registro, id_ejecucion, fecha_ejecucion_str, items_validacion, 'Con Novedad')
-                            
-                            registros_nc_novedad.append({
-                                'ID': registro_id,
-                                'nit_emisor_o_nit_del_proveedor': nit,
-                                'numero_de_nota_credito': numero_nc,
-                                'estado': 'CON NOVEDAD'
-                            })
-                            
-                            nc_con_novedad += 1
-                            nc_procesadas += 1
-                            continue
-                    
-                    # =====================================================
-                    # PASO 5: Comparar NC con FV en BD
-                    # =====================================================
-                    
-                    prefijo_numero = safe_str(registro.get('prefijo_y_numero', ''))
-                    
-                    items_validacion['Referencia'] = {
-                        'valor_xml': prefijo_numero,
-                        'valor_factura': '',
-                        'aprobado': ''
-                    }
-                    
-                    # Buscar factura correspondiente
-                    fv_encontrada = buscar_factura_correspondiente(cx, nit, prefijo_numero, fecha_ejecucion)
-                    
-                    if not fv_encontrada:
-                        print(f"[INFO] NC {numero_nc} - No se encuentra FV correspondiente")
-                        
-                        observacion = "Nota credito con referencia no encontrada"
-                        
-                        campos_actualizar = {
-                            'EstadoFinalFase_4': 'Exitoso',
-                            'ObservacionesFase_4': observacion,
-                            'ResultadoFinalAntesEventos': 'Con novedad'
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_actualizar)
-                        
-                        items_validacion['Referencia']['valor_factura'] = ''
-                        items_validacion['Referencia']['aprobado'] = 'NO'
-                        items_validacion['Observaciones'] = {
-                            'valor_xml': observacion,
-                            'valor_factura': '',
-                            'aprobado': ''
-                        }
-                        
-                        generar_trazabilidad_nc(cx, registro, id_ejecucion, fecha_ejecucion_str, items_validacion, 'Con novedad')
-                        
-                        registros_nc_novedad.append({
-                            'ID': registro_id,
-                            'nit_emisor_o_nit_del_proveedor': nit,
-                            'numero_de_nota_credito': numero_nc,
-                            'estado': 'CON NOVEDAD'
-                        })
-                        
-                        nc_con_novedad += 1
+                    if tipo_nc != '20':
+                        # Error
+                        observacion = "Nota credito sin referencia"
+                        actualizar_bd_cxp(cx, registro_id, {'EstadoFinalFase_4':'Exitoso', 'ObservacionesFase_4':observacion, 'ResultadoFinalAntesEventos':'Con Novedad'})
+                        # Log items
+                        for k, v in items_val.items():
+                            actualizar_items_comparativa(registro, cx, nit, numero_nc, k, valor_xml=v['xml'], valor_aprobado=v['ok'], val_orden_de_compra=None)
+                        actualizar_items_comparativa(registro, cx, nit, numero_nc, 'Observaciones', valor_xml=observacion, val_orden_de_compra=None)
+
+                        registros_nc_novedad.append({'ID': registro_id, 'nit_emisor_o_nit_del_proveedor': nit, 'numero_de_nota_credito': numero_nc, 'estado': 'CON NOVEDAD'})
                         nc_procesadas += 1
+                        nc_con_novedad += 1
+                        continue
+
+                    # Buscar FV
+                    prefijo_numero = safe_str(registro.get('prefijo_y_numero', ''))
+                    items_val['NotaCreditoReferenciada'] = {'xml': prefijo_numero, 'ok': ''}
+                    
+                    fv = buscar_factura_correspondiente(cx, nit, prefijo_numero, fecha_ejecucion)
+                    
+                    if not fv:
+                        observacion = "Nota credito con referencia no encontrada"
+                        actualizar_bd_cxp(cx, registro_id, {'EstadoFinalFase_4':'Exitoso', 'ObservacionesFase_4':observacion, 'ResultadoFinalAntesEventos':'Con novedad'})
+                        items_val['NotaCreditoReferenciada']['ok'] = 'NO'
+                        
+                        for k, v in items_val.items():
+                            actualizar_items_comparativa(registro, cx, nit, numero_nc, k, valor_xml=v['xml'], valor_aprobado=v['ok'], val_orden_de_compra=None)
+                        actualizar_items_comparativa(registro, cx, nit, numero_nc, 'Observaciones', valor_xml=observacion, val_orden_de_compra=None)
+                        
+                        registros_nc_novedad.append({'ID': registro_id, 'nit_emisor_o_nit_del_proveedor': nit, 'numero_de_nota_credito': numero_nc, 'estado': 'CON NOVEDAD'})
+                        nc_procesadas += 1
+                        nc_con_novedad += 1
                         continue
                     
-                    # FV encontrada - actualizar referencia
-                    numero_factura_fv = safe_str(fv_encontrada.get('numero_de_factura', ''))
-                    items_validacion['Referencia']['valor_factura'] = numero_factura_fv
-                    items_validacion['Referencia']['aprobado'] = 'SI'
-                    
-                    # =====================================================
-                    # PASO 6: Comparar valores
-                    # =====================================================
+                    # Exitoso
+                    items_val['NotaCreditoReferenciada']['ok'] = 'SI'
                     
                     valor_nc = normalizar_decimal(registro.get('valor_a_pagar_nc', 0))
-                    valor_fv = normalizar_decimal(fv_encontrada.get('valor_a_pagar', 0))
+                    valor_fv = normalizar_decimal(fv.get('valor_a_pagar', 0))
                     
-                    items_validacion['LineExtensionAmount'] = {
-                        'valor_xml': str(valor_nc),
-                        'valor_factura': str(valor_fv),
-                        'aprobado': 'SI'
-                    }
+                    actualizar_bd_cxp(cx, registro_id, {'EstadoFinalFase_4':'Exitoso', 'ResultadoFinalAntesEventos':'Encontrado'})
+                    actualizar_nota_credito_referenciada_fv(cx, safe_str(fv.get('ID', '')), numero_nc)
                     
-                    # Actualizar NC como Encontrado
-                    campos_nc = {
-                        'EstadoFinalFase_4': 'Exitoso',
-                        'ResultadoFinalAntesEventos': 'Encontrado'
-                    }
-                    actualizar_bd_cxp(cx, registro_id, campos_nc)
+                    for k, v in items_val.items():
+                        actualizar_items_comparativa(registro, cx, nit, numero_nc, k, valor_xml=v['xml'], valor_aprobado=v['ok'], val_orden_de_compra=None)
                     
-                    # Actualizar FV con nota crédito referenciada
-                    fv_id = safe_str(fv_encontrada.get('ID', ''))
-                    actualizar_nota_credito_referenciada_fv(cx, fv_id, numero_nc)
+                    actualizar_items_comparativa(registro, cx, nit, numero_nc, 'LineExtensionAmount', valor_xml=str(valor_nc), val_orden_de_compra=str(valor_fv), valor_aprobado='SI')
+                    actualizar_items_comparativa(registro, cx, nit, numero_nc, 'ActualizacionNombreArchivos', valor_xml=safe_str(registro.get('actualizacion_nombre_archivos', '')), val_orden_de_compra=None)
+                    actualizar_items_comparativa(registro, cx, nit, numero_nc, 'RutaRespaldo', valor_xml=safe_str(registro.get('ruta_respaldo', '')), val_orden_de_compra=None)
+                    actualizar_items_comparativa(registro, cx, nit, numero_nc, 'Observaciones', valor_xml=safe_str(registro.get('ObservacionesFase_4', '')), val_orden_de_compra=None)
                     
-                    # Agregar items adicionales
-                    items_validacion['ActualizacionNombreArchivos'] = {
-                        'valor_xml': safe_str(registro.get('actualizacion_nombre_archivos', '')),
-                        'valor_factura': '',
-                        'aprobado': ''
-                    }
-                    items_validacion['RutaRespaldo'] = {
-                        'valor_xml': safe_str(registro.get('ruta_respaldo', '')),
-                        'valor_factura': '',
-                        'aprobado': ''
-                    }
-                    items_validacion['Observaciones'] = {
-                        'valor_xml': safe_str(registro.get('ObservacionesFase_4', '')),
-                        'valor_factura': '',
-                        'aprobado': ''
-                    }
-                    
-                    # Generar trazabilidad exitosa
-                    generar_trazabilidad_nc(cx, registro, id_ejecucion, fecha_ejecucion_str, items_validacion, 'Encontrado')
-                    
-                    print(f"[SUCCESS] NC {numero_nc} - Encontrada FV {numero_factura_fv}")
-                    nc_encontradas += 1
                     nc_procesadas += 1
                     
                 except Exception as e:
-                    print(f"[ERROR] Error procesando NC {idx}: {str(e)}")
-                    print(traceback.format_exc())
+                    print(f"[ERROR] NC {idx}: {str(e)}")
                     nc_procesadas += 1
-                    continue
             
-            # Generar insumo de retorno para NC con novedad
             if registros_nc_novedad and ruta_insumo_retorno:
                 generar_insumo_retorno_nc(registros_nc_novedad, ruta_insumo_retorno)
-            
+
             # =========================================================
-            # PROCESAR NOTAS DÉBITO (ND)
+            # PROCESAR ND
             # =========================================================
-            
             print("\n" + "=" * 40)
             print("[PROCESO] Procesando Notas Debito (ND)")
             print("=" * 40)
             
-            # Query para obtener ND pendientes
             query_nd = """
                 SELECT * FROM [CxP].[DocumentsProcessing]
                 WHERE [tipo_de_documento] = 'ND'
-                  AND ([ResultadoFinalAntesEventos] IS NULL 
-                       OR [ResultadoFinalAntesEventos] NOT IN ('Exitoso'))
+                  AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('Exitoso'))
                 ORDER BY [executionDate] DESC
             """
-            
             df_nd = pd.read_sql(query_nd, cx)
-            print(f"[INFO] Obtenidas {len(df_nd)} notas debito para procesar")
-            
-            # Variables de conteo ND
             nd_procesadas = 0
-            nd_exitosas = 0
-            nd_con_error = 0
             
             for idx, registro in df_nd.iterrows():
                 try:
@@ -1033,188 +730,42 @@ def HU42_ValidarNotasCreditoDebito():
                     numero_nd = safe_str(registro.get('numero_de_nota_debito', ''))
                     nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor', ''))
                     
-                    print(f"\n[ND] Procesando {nd_procesadas + 1}/{len(df_nd)}: ND {numero_nd}, NIT {nit}")
+                    items_val = {}
+                    items_val['NombreEmisor'] = {'xml': safe_str(registro.get('nombre_emisor', '')), 'ok': 'SI' if campo_con_valor(registro.get('nombre_emisor', '')) else 'NO'}
+                    items_val['NITEmisor'] = {'xml': safe_str(registro.get('nit_emisor_o_nit_del_proveedor', '')), 'ok': 'SI' if campo_con_valor(registro.get('nit_emisor_o_nit_del_proveedor', '')) else 'NO'}
+                    items_val['FechaEmisionDocumento'] = {'xml': safe_str(registro.get('fecha_de_emision_documento', '')), 'ok': 'SI' if campo_con_valor(registro.get('fecha_de_emision_documento', '')) else 'NO'}
+                    items_val['NombreReceptor'] = {'xml': safe_str(registro.get('nombre_del_adquiriente', '')), 'ok': 'SI' if validar_nombre_receptor(registro.get('nombre_del_adquiriente', '')) else 'NO'}
+                    items_val['NitReceptor'] = {'xml': safe_str(registro.get('nit_del_adquiriente', '')), 'ok': 'SI' if validar_nit_receptor(registro.get('nit_del_adquiriente', '')) else 'NO'}
+                    items_val['TipoPersonaReceptor'] = {'xml': safe_str(registro.get('tipo_persona', '')), 'ok': 'SI' if validar_tipo_persona(registro.get('tipo_persona', '')) else 'NO'}
+                    items_val['DigitoVerificacionReceptor'] = {'xml': safe_str(registro.get('digito_de_verificacion', '')), 'ok': 'SI' if validar_digito_verificacion(registro.get('digito_de_verificacion', '')) else 'NO'}
+                    items_val['TaxLevelCodeReceptor'] = {'xml': safe_str(registro.get('responsabilidad_tributaria_adquiriente', '')), 'ok': 'SI' if validar_tax_level_code(registro.get('responsabilidad_tributaria_adquiriente', '')) else 'NO'}
                     
-                    items_validacion = {}
+                    actualizar_bd_cxp(cx, registro_id, {'EstadoFinalFase_4':'Exitoso', 'ResultadoFinalAntesEventos':'Exitoso'})
                     
-                    # =====================================================
-                    # PASO 1: Validar campos básicos
-                    # =====================================================
+                    for k, v in items_val.items():
+                        actualizar_items_comparativa(registro, cx, nit, numero_nd, k, valor_xml=v['xml'], valor_aprobado=v['ok'], val_orden_de_compra=None)
                     
-                    nombre_emisor = safe_str(registro.get('nombre_emisor', ''))
-                    nit_emisor = safe_str(registro.get('nit_emisor_o_nit_del_proveedor', ''))
-                    fecha_emision = safe_str(registro.get('fecha_de_emision_documento', ''))
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'LineExtensionAmount', valor_xml=safe_str(registro.get('valor_a_pagar', '')), val_orden_de_compra=None)
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'InvoiceTypecode', valor_xml=safe_str(registro.get('tipo_de_nota_debito', '')), val_orden_de_compra=None) # Mapped
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'NotaCreditoReferenciada', valor_xml=safe_str(registro.get('prefijo_y_numero', '')), val_orden_de_compra=None) # Mapped Reference
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'CufeUUID', valor_xml=safe_str(registro.get('codigo_cufe_de_la_factura', '')), val_orden_de_compra=None) # Mapped
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'ActualizacionNombreArchivos', valor_xml=safe_str(registro.get('actualizacion_nombre_archivos', '')), val_orden_de_compra=None)
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'RutaRespaldo', valor_xml=safe_str(registro.get('ruta_respaldo', '')), val_orden_de_compra=None)
+                    actualizar_items_comparativa(registro, cx, nit, numero_nd, 'Observaciones', valor_xml=safe_str(registro.get('ObservacionesFase_4', '')), val_orden_de_compra=None)
                     
-                    items_validacion['Nombre Emisor'] = {
-                        'valor_xml': nombre_emisor,
-                        'aprobado': 'SI' if campo_con_valor(nombre_emisor) else 'NO'
-                    }
-                    
-                    items_validacion['NIT Emisor'] = {
-                        'valor_xml': nit_emisor,
-                        'aprobado': 'SI' if campo_con_valor(nit_emisor) else 'NO'
-                    }
-                    
-                    items_validacion['Fecha emision del documento'] = {
-                        'valor_xml': fecha_emision,
-                        'aprobado': 'SI' if campo_con_valor(fecha_emision) else 'NO'
-                    }
-                    
-                    # =====================================================
-                    # PASO 2: Validar campos receptor
-                    # =====================================================
-                    
-                    nombre_receptor = safe_str(registro.get('nombre_del_adquiriente', ''))
-                    nit_receptor = safe_str(registro.get('nit_del_adquiriente', ''))
-                    tipo_persona = safe_str(registro.get('tipo_persona', ''))
-                    digito_verif = safe_str(registro.get('digito_de_verificacion', ''))
-                    tax_level_code = safe_str(registro.get('responsabilidad_tributaria_adquiriente', ''))
-                    
-                    items_validacion['Nombre Receptor'] = {
-                        'valor_xml': nombre_receptor,
-                        'aprobado': 'SI' if validar_nombre_receptor(nombre_receptor) else 'NO'
-                    }
-                    
-                    items_validacion['Nit Receptor'] = {
-                        'valor_xml': nit_receptor,
-                        'aprobado': 'SI' if validar_nit_receptor(nit_receptor) else 'NO'
-                    }
-                    
-                    items_validacion['Tipo Persona Receptor'] = {
-                        'valor_xml': tipo_persona,
-                        'aprobado': 'SI' if validar_tipo_persona(tipo_persona) else 'NO'
-                    }
-                    
-                    items_validacion['DigitoVerificacion Receptor'] = {
-                        'valor_xml': digito_verif,
-                        'aprobado': 'SI' if validar_digito_verificacion(digito_verif) else 'NO'
-                    }
-                    
-                    items_validacion['TaxLevelCode Receptor'] = {
-                        'valor_xml': tax_level_code,
-                        'aprobado': 'SI' if validar_tax_level_code(tax_level_code) else 'NO'
-                    }
-                    
-                    # =====================================================
-                    # PASO 3: Marcar como Exitoso y agregar items finales
-                    # =====================================================
-                    
-                    campos_nd = {
-                        'EstadoFinalFase_4': 'Exitoso',
-                        'ResultadoFinalAntesEventos': 'Exitoso'
-                    }
-                    actualizar_bd_cxp(cx, registro_id, campos_nd)
-                    
-                    # Items adicionales
-                    items_validacion['LineExtensionAmount'] = {
-                        'valor_xml': safe_str(registro.get('valor_a_pagar', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['Tipo de nota debito'] = {
-                        'valor_xml': safe_str(registro.get('tipo_de_nota_debito', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['Referencia'] = {
-                        'valor_xml': safe_str(registro.get('prefijo_y_numero', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['Codigo CUFE de la factura'] = {
-                        'valor_xml': safe_str(registro.get('codigo_cufe_de_la_factura', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['Cude de la Nota Debito'] = {
-                        'valor_xml': safe_str(registro.get('cude_de_la_nota_debito', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['ActualizacionNombreArchivos'] = {
-                        'valor_xml': safe_str(registro.get('actualizacion_nombre_archivos', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['RutaRespaldo'] = {
-                        'valor_xml': safe_str(registro.get('ruta_respaldo', '')),
-                        'aprobado': ''
-                    }
-                    
-                    items_validacion['Observaciones'] = {
-                        'valor_xml': safe_str(registro.get('ObservacionesFase_4', '')),
-                        'aprobado': ''
-                    }
-                    
-                    # Generar trazabilidad
-                    generar_trazabilidad_nd(cx, registro, id_ejecucion, fecha_ejecucion_str, items_validacion, 'Exitoso')
-                    
-                    print(f"[SUCCESS] ND {numero_nd} - Procesada exitosamente")
-                    nd_exitosas += 1
                     nd_procesadas += 1
                     
                 except Exception as e:
-                    print(f"[ERROR] Error procesando ND {idx}: {str(e)}")
-                    print(traceback.format_exc())
-                    nd_con_error += 1
+                    print(f"[ERROR] ND {idx}: {str(e)}")
                     nd_procesadas += 1
-                    continue
-        
-        # Fin del procesamiento
-        tiempo_total = time.time() - t_inicio
-        
-        print("")
-        print("=" * 80)
-        print("[FIN] Procesamiento HU4.2 - VALIDACION NC y ND completado")
-        print("=" * 80)
-        print("[ESTADISTICAS NC]")
-        print(f"  Total procesadas: {nc_procesadas}")
-        print(f"  Encontradas: {nc_encontradas}")
-        print(f"  Con novedad: {nc_con_novedad}")
-        print(f"  No exitoso (excede plazo): {nc_no_exitoso}")
-        print("[ESTADISTICAS ND]")
-        print(f"  Total procesadas: {nd_procesadas}")
-        print(f"  Exitosas: {nd_exitosas}")
-        print(f"  Con error: {nd_con_error}")
-        print(f"[TIEMPO] Total: {round(tiempo_total, 2)}s")
-        print("=" * 80)
-        
-        resumen = f"NC: {nc_procesadas} procesadas ({nc_encontradas} encontradas, {nc_con_novedad} con novedad). ND: {nd_procesadas} procesadas ({nd_exitosas} exitosas)"
         
         #SetVar("vLocStrResultadoSP", "True")
-        #SetVar("vLocStrResumenSP", resumen)
+        #SetVar("vLocStrResumenSP", f"NC: {nc_procesadas}, ND: {nd_procesadas}")
         
     except Exception as e:
-        print("")
-        print("=" * 80)
-        print("[ERROR CRITICO] La funcion HU42_ValidarNotasCreditoDebito fallo")
-        print("=" * 80)
-        print(f"[ERROR] Mensaje: {str(e)}")
+        print(f"[ERROR CRITICO] {str(e)}")
         print(traceback.format_exc())
-        print("=" * 80)
-        
-        #SetVar("vGblStrDetalleError", str(e))
-        #SetVar("vGblStrSystemError", traceback.format_exc())
+        #SetVar("vGblStrDetalleError", traceback.format_exc())
+        #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         #SetVar("vLocStrResultadoSP", "False")
 
-
-# Mock para pruebas locales
-if __name__ == "__main__":
-    _mock_vars = {}
-    def GetVar(name):
-        return _mock_vars.get(name, "")
-    def #SetVar(name, value):
-        _mock_vars[name] = value
-        print(f"[#SetVar] {name} = {value}")
-    
-    _mock_vars["vLocDicConfig"] = '''{
-        "ServidorBaseDatos": "localhost",
-        "NombreBaseDatos": "NotificationsPaddy",
-        "plazo_maximo_retoma_dias": 120,
-        "IDEjecucion": "12345"
-    }'''
-    _mock_vars["vGblStrUsuarioBaseDatos"] = "sa"
-    _mock_vars["vGblStrClaveBaseDatos"] = "password"
-    
-    print("Ejecutando prueba local...")
-    # HU42_ValidarNotasCreditoDebito()
