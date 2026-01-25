@@ -222,19 +222,19 @@ def ZPAF_ValidarActivosFijos():
 
         # Intento 1: Autenticacion SQL
         ########################
-        # print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
-        # for attempt in range(max_retries):
-        #     try:
-        #         cx = pyodbc.connect(conn_str_auth, timeout=30)
-        #         cx.autocommit = False
-        #         conectado = True
-        #         print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
-        #         break
-        #     except pyodbc.Error as e:
-        #         print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
-        #         excepcion_final = e
-        #         if attempt < max_retries - 1:
-        #             time.sleep(1)
+        print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
+        for attempt in range(max_retries):
+            try:
+                cx = pyodbc.connect(conn_str_auth, timeout=30)
+                cx.autocommit = False
+                conectado = True
+                print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
+                break
+            except pyodbc.Error as e:
+                print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
+                excepcion_final = e
+                if attempt < max_retries - 1:
+                    time.sleep(1)
 
         # Intento 2: Trusted Connection (si fallo el anterior)
         if not conectado:
