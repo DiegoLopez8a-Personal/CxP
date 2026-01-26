@@ -1003,7 +1003,7 @@ def HU8_GenerarReportesCxP():
         """
         Genera Consolidado_CXP_NoExitososRechazados_MMAAAA.xlsx
         
-        - 2 hojas: Rechazados con evento, No Exitosos vigentes
+        - 2 hojas: Rechazados con evento, NO EXITOSOs vigentes
         - Frecuencia: Mensual
         """
         try:
@@ -1031,7 +1031,7 @@ def HU8_GenerarReportesCxP():
                 ORDER BY dp.[executionDate] DESC
             """
             
-            # Query no exitosos vigentes
+            # Query NO EXITOSOs vigentes
             query_no_exitosos = """
                 SELECT 
                     dp.[ID],
@@ -1052,7 +1052,7 @@ def HU8_GenerarReportesCxP():
             
             hojas = {
                 'Rechazados': df_rechazados,
-                'No Exitosos Vigentes': df_no_exitosos
+                'NO EXITOSOs Vigentes': df_no_exitosos
             }
             
             crear_excel_multihoja(hojas, ruta_archivo)
@@ -1060,7 +1060,7 @@ def HU8_GenerarReportesCxP():
             return ruta_archivo
             
         except Exception as e:
-            print(f"[ERROR] Error generando consolidado no exitosos: {str(e)}")
+            print(f"[ERROR] Error generando consolidado NO EXITOSOs: {str(e)}")
             return None
     
     def generar_consolidado_pendientes(cx, rutas, fecha_ejecucion):
@@ -1193,7 +1193,7 @@ def HU8_GenerarReportesCxP():
             
             primer_dia = fecha_ejecucion.replace(day=1)
             
-            # NC Encontrados y No Exitosos del mes
+            # NC Encontrados y NO EXITOSOs del mes
             query_nc_encontrados = f"""
                 SELECT 
                     dp.[ID],
@@ -1206,7 +1206,7 @@ def HU8_GenerarReportesCxP():
                     dp.[ResultadoFinalAntesEventos] AS ResultadoFinal
                 FROM [CxP].[DocumentsProcessing] dp
                 WHERE dp.[tipo_de_documento] = 'NC'
-                  AND dp.[ResultadoFinalAntesEventos] IN ('Encontrado', 'No exitoso')
+                  AND dp.[ResultadoFinalAntesEventos] IN ('Encontrado', 'NO EXITOSO')
                   AND dp.[executionDate] >= '{primer_dia}'
                 ORDER BY dp.[executionDate] DESC
             """
@@ -1479,9 +1479,9 @@ BOT_VALIDACION_FV_NC_ND_CXP_VALIDACION de facturas Cuentas por Pagar
             print("  - Generando Consolidado_FV_CXP_ConNovedad...")
             rutas_reportes['Consolidado Con Novedad'] = generar_consolidado_con_novedad(cx, rutas, fecha_ejecucion)
             
-            # Consolidado No Exitosos Rechazados (mensual)
+            # Consolidado NO EXITOSOs Rechazados (mensual)
             print("  - Generando Consolidado_CXP_NoExitososRechazados...")
-            rutas_reportes['Consolidado No Exitosos'] = generar_consolidado_no_exitosos_rechazados(cx, rutas, fecha_ejecucion)
+            rutas_reportes['Consolidado NO EXITOSOs'] = generar_consolidado_no_exitosos_rechazados(cx, rutas, fecha_ejecucion)
             
             # Consolidado Pendientes (mensual)
             print("  - Generando Consolidado_CXP_Pendientes...")

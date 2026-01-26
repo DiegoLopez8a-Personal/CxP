@@ -34,9 +34,21 @@ def HU42_ValidarNotasCreditoDebito():
         except: return ""
     
     def truncar_observacion(obs, max_len=3900):
-        if not obs: return ""
+        """
+        Trunca observación para prevenir overflow en BD.
+        
+        Args:
+            obs: Observación a truncar
+            max_len: Longitud máxima permitida
+            
+        Returns:
+            str: Observación truncada si excede max_len
+        """
+        if not obs:
+            return ""
         obs_str = safe_str(obs)
-        if len(obs_str) > max_len: return obs_str[:max_len - 3] + "..."
+        if len(obs_str) > max_len:
+            return obs_str[:max_len - 3] + "..."
         return obs_str
     
     def parse_config(raw):
@@ -148,46 +160,143 @@ def HU42_ValidarNotasCreditoDebito():
             cx.cursor().execute("UPDATE [CxP].[DocumentsProcessing] SET [NotaCreditoReferenciada] = ? WHERE [ID] = ?", (numero_nc, fv_id))
         except Exception as e: print(f"Error Update NC Ref: {e}")
     
-    def actualizar_items_comparativa(registro, cx, nit, factura, nombre_item,
+    def actualizar_items_comparativa(registro_id, cx, nit, factura, nombre_item,
                                  actualizar_valor_xml=True, valor_xml=None,
-                                 actualizar_aprobado=True, valor_aprobado=None,
+                                 actualizar_aprobado=True, valor_aprobado=None, 
                                  actualizar_orden_compra=True, val_orden_de_compra=None):
+        """
+        Actualiza o inserta items en [dbo].[CxP.Comparativa].
+        """
         cur = cx.cursor()
-        def safe_db_val(v): return str(v).strip() if v and str(v).strip().lower() not in ('none','null') else None
+        
+        def safe_db_val(v):
+            """Convierte strings vacios o 'None' a None real para BD"""
+            if v is None:
+                return None
+            s = str(v).strip()
+            if not s or s.lower() == 'none' or s.lower() == 'null':
+                return None
+            return s
 
-        cur.execute("SELECT COUNT(*) FROM [dbo].[CxP.Comparativa] WHERE NIT=? AND Factura=? AND Item=? AND ID_registro=?", (nit, factura, nombre_item, registro['ID_dp']))
-        count_exist = cur.fetchone()[0]
+        # 1. Contar items existentes
+        query_count = """
+        SELECT COUNT(*)
+        FROM [dbo].[CxP.Comparativa]
+        WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
+        """
+        # Se agregó ID_registro para ser precisos con la agrupación
+        cur.execute(query_count, (nit, factura, nombre_item, registro_id))
+        count_existentes = cur.fetchone()[0]
 
-        l_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
-        l_xml = valor_xml.split('|') if valor_xml else []
-        l_aprob = valor_aprobado.split('|') if valor_aprobado else []
-        if isinstance(valor_aprobado, list): l_aprob = valor_aprobado
+        # 2. Manejo seguro de los Splits (convirtiendo None a lista vacía)
+        lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
+        lista_xml = valor_xml.split('|') if valor_xml else []
+        lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
 
-        max_len = max(len(l_compra), len(l_xml), len(l_aprob))
-        max_len = 1 if max_len == 0 else max_len
+        # 3. Obtener el máximo conteo
+        maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
+        count_nuevos = maximo_conteo # Corregido: Ya es un entero, no necesita len()
+        
+        maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
 
-        for i in range(max_len):
-            v_comp = l_compra[i] if i < len(l_compra) else None
-            v_xml = l_xml[i] if i < len(l_xml) else None
-            v_aprob = l_aprob[i] if i < len(l_aprob) else None
+        # Iterar sobre los valores nuevos para actualizar o insertar
+        for i in range(maximo_conteo):
+            # Extraer item de forma segura (si no existe índice, es None)
+            item_compra = lista_compra[i] if i < len(lista_compra) else None
+            item_xml = lista_xml[i] if i < len(lista_xml) else None
+            item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
 
-            v_comp_db = safe_db_val(v_comp)
-            v_xml_db = safe_db_val(v_xml)
-            v_aprob_db = safe_db_val(v_aprob)
+            # Limpiar valores para la BD
+            val_compra = safe_db_val(item_compra)
+            val_xml = safe_db_val(item_xml)
+            val_aprob = safe_db_val(item_aprob)
 
-            if i < count_exist:
-                sets, params = [], []
-                if actualizar_orden_compra: sets.append("Valor_Orden_de_Compra=?"); params.append(v_comp_db)
-                if actualizar_valor_xml: sets.append("Valor_XML=?"); params.append(v_xml_db)
-                if actualizar_aprobado: sets.append("Aprobado=?"); params.append(v_aprob_db)
-                if sets:
-                    params.extend([nit, factura, nombre_item, registro['ID_dp'], i+1])
-                    cur.execute(f"WITH CTE AS (SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado, ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn FROM [dbo].[CxP.Comparativa] WHERE NIT=? AND Factura=? AND Item=? AND ID_registro=?) UPDATE CTE SET {','.join(sets)} WHERE rn=?", params)
+            if i < count_existentes:
+                # UPDATE: Construcción dinámica de la consulta
+                set_clauses = []
+                params = []
+
+                if actualizar_orden_compra:
+                    set_clauses.append("Valor_Orden_de_Compra = ?")
+                    params.append(val_compra)
+                if actualizar_valor_xml:
+                    set_clauses.append("Valor_XML = ?")
+                    params.append(val_xml)
+                if actualizar_aprobado:
+                    set_clauses.append("Aprobado = ?")
+                    params.append(val_aprob)
+
+                # Si no hay nada que actualizar, continuamos al siguiente ciclo
+                if not set_clauses:
+                    continue
+
+                update_query = f"""
+                WITH CTE AS (
+                    SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
+                        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
+                    FROM [dbo].[CxP.Comparativa]
+                    WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
+                )
+                UPDATE CTE
+                SET {", ".join(set_clauses)}
+                WHERE rn = ?
+                """
+                # Los parámetros del WHERE van antes del rn
+                final_params = params + [nit, factura, nombre_item, registro_id, i + 1]
+                cur.execute(update_query, final_params)
+
             else:
-                cur.execute("INSERT INTO [dbo].[CxP.Comparativa] (Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra, Valor_XML, Aprobado) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (registro.get('fecha_de_retoma'), registro.get('tipo_de_documento'), None, registro.get('nombre_emisor'), registro['ID_dp'], nit, factura, nombre_item, v_comp_db, v_xml_db, v_aprob_db))
+                # INSERT: Corregido el número de parámetros (ahora son 7)
+                insert_query = """
+                INSERT INTO [dbo].[CxP.Comparativa] (
+                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
+                    Valor_XML, Aprobado
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                cur.execute(insert_query, (registro['Fecha_de_retoma_antes_de_contabilizacion_dp'],registro['documenttype_dp'],registro['numero_de_liquidacion_u_orden_de_compra_dp'],registro['nombre_emisor_dp'], registro['ID_dp'], nit, factura, nombre_item, val_compra, val_xml, val_aprob))
+        
         cur.close()
-
+        print(f"[PROCESADO] Item '{nombre_item}' - {count_nuevos} valor(es) enviados (Existían: {count_existentes})")
+    
+    def actualizar_estado_comparativa(cx, nit, factura, estado):
+        """
+        Actualiza el Estado_validacion_antes_de_eventos en CxP_Comparativa.
+        
+        Args:
+            cx: Conexión a BD
+            nit: NIT del proveedor
+            factura: Número de factura
+            estado: Estado a establecer
+        """
+        cur = cx.cursor()
+        update_sql = """
+        UPDATE [dbo].[CxP.Comparativa]
+        SET Estado_validacion_antes_de_eventos = ?
+        WHERE NIT = ? AND Factura = ?
+        """
+        cur.execute(update_sql, (estado, nit, factura))
+        cur.close()
+        print(f"[UPDATE] Estado comparativa: {estado}")
+        
+    def actualizar_fecha_retoma(cx, nit, factura, fecha):
+        """
+        Actualiza el Fecha_de_retoma_antes_de_contabilizacion en CxP_Comparativa.
+        
+        Args:
+            cx: Conexión a BD
+            nit: NIT del proveedor
+            factura: Número de factura
+            estado: Estado a establecer
+        """
+        cur = cx.cursor()
+        update_sql = """
+        UPDATE [dbo].[CxP.Comparativa]
+        SET Fecha_de_retoma_antes_de_contabilizacion = ?
+        WHERE NIT = ? AND Factura = ?
+        """
+        cur.execute(update_sql, (fecha, nit, factura))
+        cur.close()
+        
     def buscar_factura_correspondiente(cx, nit, referencia, fecha_ejecucion):
         try:
             if isinstance(fecha_ejecucion, str):
@@ -225,14 +334,15 @@ def HU42_ValidarNotasCreditoDebito():
     try:
         print("[INICIO] HU4.2 NC/ND")
         cfg = parse_config(GetVar("vLocDicConfig"))
-        plazo_max = int(cfg.get('plazo_maximo_retoma_dias', 120))
+        plazo_max = int(cfg.get('PlazoMaximoRetoma', 120))
         ruta_ret = cfg.get('RutaInsumoRetorno', '')
         manual = cfg.get('EsRetornoManual', False)
+        
         now = datetime.now()
         
         with crear_conexion_db(cfg) as cx:
             # NC
-            df_nc = pd.read_sql("SELECT * FROM [CxP].[DocumentsProcessing] WHERE [tipo_de_documento]='NC' AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('Encontrado', 'No exitoso')) ORDER BY [executionDate] DESC", cx)
+            df_nc = pd.read_sql("SELECT * FROM [CxP].[DocumentsProcessing] WHERE [tipo_de_documento]='NC' AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('ENCONTRADO', 'NO EXITOSO'))", cx)
             print(f"NC: {len(df_nc)}")
             
             cnt_nc, cnt_nov = 0, 0
@@ -240,22 +350,31 @@ def HU42_ValidarNotasCreditoDebito():
             
             for idx, r in df_nc.iterrows():
                 try:
+                    obs_anterior = r.get('ObservacionesFase_4') 
                     r['ID_dp'] = r.get('ID') # Comp
                     reg_id = safe_str(r.get('ID', ''))
                     num_nc = safe_str(r.get('numero_de_nota_credito', ''))
                     nit = safe_str(r.get('nit_emisor_o_nit_del_proveedor', ''))
+                    num_factura = r.get('numero_de_factura')
                     print(f"NC {num_nc}")
                     
                     if not manual:
                         f_ret = r.get('fecha_de_retoma')
                         if campo_con_valor(f_ret):
                             if calcular_dias_diferencia(f_ret, now) > plazo_max:
-                                obs = "Registro excede el plazo maximo de retoma"
-                                actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'No exitoso', 'ObservacionesFase_4': obs, 'ResultadoFinalAntesEventos': 'No exitoso'})
-                                actualizar_items_comparativa(r, cx, nit, num_nc, 'Observaciones', valor_xml=obs)
+                                obs = f"Registro excede el plazo maximo de retoma, {obs_anterior}"
+                                actualizar_bd_cxp(cx, reg_id, {'EstadoFinalFase_4': 'NO EXITOSO', 'ObservacionesFase_4': truncar_observacion(obs), 'ResultadoFinalAntesEventos': 'NO EXITOSO'})
+                                
+                                actualizar_items_comparativa(cx=cx, registro_id=r.get('ID'), nit=nit, factura=num_factura, 
+                                                    nombre_item='Observaciones',
+                                                    valor_xml=truncar_observacion(obs), valor_aprobado=None, val_orden_de_compra=None)
+                                
+                                actualizar_estado_comparativa(cx=cx, nit=nit, factura=num_factura, estado="NO EXITOSO") 
+                                
+                                actualizar_fecha_retoma(cx=cx, nit=nit, factura=num_factura, fecha=r.get('Fecha_retoma_contabilizacion')) 
                                 cnt_nc += 1; continue
                         else:
-                            cx.cursor().execute("UPDATE [CxP].[DocumentsProcessing] SET [fecha_de_retoma]=? WHERE [ID]=?", (now.strftime('%Y-%m-%d'), reg_id))
+                            cx.cursor().execute("UPDATE [CxP].[DocumentsProcessing] SET [Fecha_de_retoma_antes_de_contabilizacion]=? WHERE [ID]=?", (now.strftime('%Y-%m-%d'), reg_id))
 
                     items = {}
                     items['NombreEmisor'] = {'xml': safe_str(r.get('nombre_emisor', '')), 'ok': 'SI' if campo_con_valor(r.get('nombre_emisor')) else 'NO'}
