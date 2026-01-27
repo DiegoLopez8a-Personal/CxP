@@ -365,21 +365,6 @@ def HU42_ValidarNotasCreditoDebito():
             wb.save(ruta)
         except Exception as e: print(f"Error generando insumo retorno: {e}")
 
-    def es_factura_retorno_manual(cx, nit, factura):
-        """
-        Consulta si una factura específica existe en [CxP].[FacturasRetorno].
-        Retorna True si existe, indicando que es un retorno manual.
-        """
-        try:
-            if not nit or not factura: return False
-            cur = cx.cursor()
-            query = "SELECT TOP 1 1 FROM [CxP].[FacturasRetorno] WHERE [Nit] = ? AND [Numero_factura] = ?"
-            cur.execute(query, (nit, factura))
-            return cur.fetchone() is not None
-        except Exception as e:
-            print(f"[WARNING] Error consultando FacturasRetorno: {e}")
-            return False
-
     # =========================================================================
     # LOGICA PRINCIPAL
     # =========================================================================
@@ -422,7 +407,7 @@ def HU42_ValidarNotasCreditoDebito():
                     num_nc = safe_str(r.get('numero_de_nota_credito', ''))
                     num_factura = r.get('numero_de_factura') # Puede ser None
                     obs_anterior = r.get('ObservacionesFase_4')
-                    
+
                     # Metadata para Comparativa INSERT
                     meta_fecha_retoma = r.get('Fecha_retoma_contabilizacion')
                     meta_tipo_doc = r.get('tipo_de_documento')
@@ -431,12 +416,13 @@ def HU42_ValidarNotasCreditoDebito():
 
                     print(f"  > NC: {num_nc} (ID: {reg_id})")
 
-                    # Determinar si es retorno manual (Config Global o Especifico en BD)
+                    # Determinar si es retorno manual (Config Global o EstadoFase_3 Exitoso)
                     es_manual = config_manual
                     if not es_manual:
-                        if es_factura_retorno_manual(cx, nit, num_factura):
+                        estado_f3 = safe_str(r.get('EstadoFase_3', '')).upper()
+                        if estado_f3 == 'EXITOSO':
                             es_manual = True
-                            print(f"    [INFO] Factura {num_factura} marcada como Retorno Manual en BD.")
+                            print(f"    [INFO] Factura {num_factura} marcada como Retorno Manual (EstadoFase_3=Exitoso).")
 
                     # Validacion Retoma (Solo si no es manual)
                     if not es_manual:
