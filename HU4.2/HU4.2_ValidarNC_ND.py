@@ -365,6 +365,21 @@ def HU42_ValidarNotasCreditoDebito():
             wb.save(ruta)
         except Exception as e: print(f"Error generando insumo retorno: {e}")
 
+    def es_factura_retorno_manual(cx, nit, factura):
+        """
+        Consulta si una factura específica existe en [CxP].[FacturasRetorno].
+        Retorna True si existe, indicando que es un retorno manual.
+        """
+        try:
+            if not nit or not factura: return False
+            cur = cx.cursor()
+            query = "SELECT TOP 1 1 FROM [CxP].[FacturasRetorno] WHERE [Nit] = ? AND [Numero_factura] = ?"
+            cur.execute(query, (nit, factura))
+            return cur.fetchone() is not None
+        except Exception as e:
+            print(f"[WARNING] Error consultando FacturasRetorno: {e}")
+            return False
+
     # =========================================================================
     # LOGICA PRINCIPAL
     # =========================================================================
@@ -385,7 +400,7 @@ def HU42_ValidarNotasCreditoDebito():
 
         plazo_max = int(cfg.get('PlazoMaximoRetoma', 120))
         ruta_ret = cfg.get('RutaInsumoRetorno', '')
-        manual = cfg.get('EsRetornoManual', False)
+        config_manual = cfg.get('EsRetornoManual', False)
         
         now = datetime.now()
         
@@ -416,8 +431,15 @@ def HU42_ValidarNotasCreditoDebito():
 
                     print(f"  > NC: {num_nc} (ID: {reg_id})")
 
+                    # Determinar si es retorno manual (Config Global o Especifico en BD)
+                    es_manual = config_manual
+                    if not es_manual:
+                        if es_factura_retorno_manual(cx, nit, num_factura):
+                            es_manual = True
+                            print(f"    [INFO] Factura {num_factura} marcada como Retorno Manual en BD.")
+
                     # Validacion Retoma (Solo si no es manual)
-                    if not manual:
+                    if not es_manual:
                         f_ret = r.get('fecha_de_retoma')
                         if campo_con_valor(f_ret):
                             dias = calcular_dias_diferencia(f_ret, now)
