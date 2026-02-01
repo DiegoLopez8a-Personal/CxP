@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de Cantidad y Precio (ZPRE).
+
+LOGICA:
+Verifica que Cantidad * Precio Unitario coincida con el total de la línea, manejando desviaciones permitidas.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPRE_ValidarCantidadPrecio():
     import json, ast, traceback, pyodbc, pandas as pd, numpy as np
     from datetime import datetime

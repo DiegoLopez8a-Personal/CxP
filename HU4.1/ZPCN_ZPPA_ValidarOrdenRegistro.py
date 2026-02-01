@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de Orden de Registro.
+
+LOGICA:
+Verifica la secuencia y existencia de la orden de registro contable.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarOrdenRegistro():
     import json
     import ast

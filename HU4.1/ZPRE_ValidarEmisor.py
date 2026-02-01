@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación del Emisor (ZPRE).
+
+LOGICA:
+Comparación de nombres de proveedor para documentos ZPRE.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPRE_ValidarEmisor():
     import json, ast, traceback, pyodbc, pandas as pd, numpy as np
     from datetime import datetime

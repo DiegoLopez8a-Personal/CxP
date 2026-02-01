@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de Elemento PEP (Proyectos).
+
+LOGICA:
+Verifica que el Elemento PEP asociado al gasto sea válido y esté activo en el presupuesto.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarElementoPEP():
     import json
     import ast

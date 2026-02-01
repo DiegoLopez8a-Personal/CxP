@@ -1,3 +1,4 @@
+-- Author: Diego Ivan Lopez Ochoa
 USE [NotificationsPaddy]
 GO
 /****** Object:  StoredProcedure [CxP].[HU4_D_Validacion_NITs]    Script Date: 01/02/2026 4:39:27 ******/

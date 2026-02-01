@@ -2,26 +2,41 @@ def HU8_GenerarReportesCxP():
     """
     Función para generar reportes y organizar archivos del proceso CxP.
     
-    VERSIÓN: 1.0 - 12 Enero 2026
+    Esta función es el componente final del proceso de automatización (Historia de Usuario 8).
+    Su objetivo es doble:
+    1.  **Gestión de Archivos:** Organizar los archivos físicos (PDFs y XMLs) de las facturas procesadas,
+        moviéndolos desde una carpeta de entrada a una estructura de carpetas histórica basada en fecha y estado.
+    2.  **Generación de Reportes:** Crear múltiples reportes en Excel que consolidan la información del proceso
+        para diferentes audiencias (Auditoría, Contabilidad, Tesorería).
+
+    Funcionalidades:
+        1.  Crear árbol de carpetas en File Server (Año/Mes/Día/Estado).
+        2.  Identificar y verificar archivos XML/PDF asociados a cada registro.
+        3.  Mover archivos a su carpeta destino según el estado final (Aprobado, Rechazado, Con Novedad).
+        4.  Generar los siguientes reportes:
+            - **Reporte_de_ejecución_CXP**: Detalle diario de facturas procesadas.
+            - **Reporte_de_ejecución_GRANOS**: Filtro específico para granos.
+            - **Reporte_de_ejecución_MAÍZ**: Filtro específico para maíz.
+            - **Reporte_de_ejecución_COMERCIALIZADOS**: Filtro para comercializados.
+            - **Reporte_KPIs_CXP**: Estadísticas mensuales.
+            - **Consolidado_FV_CXP_ConNovedad**: Acumulado de novedades.
+            - **Consolidado_CXP_NoExitososRechazados**: Acumulado de rechazos.
+            - **Consolidado_CXP_Pendientes**: Documentos pendientes de gestión.
+            - **Consolidado_Global_CXP**: Trazabilidad anual completa.
+            - **Consolidado_NC_ND_CXP**: Reporte de Notas Crédito y Débito.
+
+    Variables de entrada (RocketBot):
+        - vLocDicConfig (str | dict): Configuración general.
+            - RutaFileServer: Ruta raíz para carpetas y reportes.
+            - DiaReporteMensualAnual: Día del mes para ejecutar reportes mensuales.
+            - MesReporteAnual: Mes para ejecutar reporte anual.
+
+    Variables de salida (RocketBot):
+        - vLocStrResultadoSP: "True" / "False".
+        - vLocStrResumenSP: Resumen de la ejecución.
     
-    FUNCIONALIDADES:
-        1. Crear árbol de carpetas en File Server
-        2. Identificar y verificar archivos XML/PDF
-        3. Mover archivos según estado del registro
-        4. Generar reportes:
-           - Reporte_de_ejecución_CXP (diario)
-           - Reporte_de_ejecución_GRANOS (mensual)
-           - Reporte_de_ejecución_MAÍZ (mensual)
-           - Reporte_de_ejecución_COMERCIALIZADOS (diario)
-           - Reporte_KPIs_CXP (mensual)
-           - Consolidado_FV_CXP_ConNovedad (mensual)
-           - Consolidado_CXP_NoExitososRechazados (mensual)
-           - Consolidado_CXP_Pendientes (mensual)
-           - Consolidado_Global_CXP (anual)
-           - Consolidado_NC_ND_CXP (mensual)
-    
-    Returns:
-        None: Actualiza variables globales en RocketBot
+    Author:
+        Diego Ivan Lopez Ochoa
     """
     
     # =========================================================================
@@ -143,73 +158,6 @@ def HU8_GenerarReportesCxP():
     def crear_conexion_db(cfg, max_retries=3):
         """
         Context Manager para establecer una conexion segura y resiliente a SQL Server.
-
-        Implementa una estrategia de reintentos (Retries) y prueba dos metodos
-        de autenticacion secuencialmente, garantizando maxima compatibilidad
-        con diferentes configuraciones de servidor.
-
-        Args:
-            cfg (dict): Diccionario con credenciales y parametros de conexion.
-                Claves requeridas:
-                    - ServidorBaseDatos (str): Hostname o IP del servidor SQL.
-                    - NombreBaseDatos (str): Nombre de la base de datos.
-                Claves opcionales:
-                    - UsuarioBaseDatos (str): Usuario para autenticacion SQL.
-                    - ClaveBaseDatos (str): Contrasena del usuario SQL.
-            max_retries (int, optional): Numero maximo de intentos por cada
-                metodo de autenticacion. Por defecto 3.
-
-        Yields:
-            pyodbc.Connection: Objeto de conexion activo con autocommit deshabilitado.
-                - Se hace commit automatico al salir del contexto sin errores.
-                - Se hace rollback automatico si ocurre una excepcion.
-
-        Raises:
-            ValueError: Si faltan parametros obligatorios (ServidorBaseDatos,
-                NombreBaseDatos) en el diccionario de configuracion.
-            pyodbc.Error: Si no se logra conectar tras agotar todos los intentos
-                con ambos metodos de autenticacion.
-            Exception: Cualquier error que ocurra durante operaciones de BD.
-
-        Examples:
-            Uso basico con autenticacion SQL::
-
-                cfg = {
-                    "ServidorBaseDatos": "sqlserver.empresa.com",
-                    "NombreBaseDatos": "CxP_Produccion",
-                    "UsuarioBaseDatos": "app_user",
-                    "ClaveBaseDatos": "SecurePass123"
-                }
-                with crear_conexion_db(cfg) as conexion:
-                    cursor = conexion.cursor()
-                    cursor.execute("SELECT * FROM Tabla")
-                    resultados = cursor.fetchall()
-                # Commit automatico al salir del bloque 'with'
-
-            Manejo de errores con rollback automatico::
-
-                try:
-                    with crear_conexion_db(cfg) as conexion:
-                        cursor = conexion.cursor()
-                        cursor.execute("INSERT INTO Tabla VALUES (...)")
-                        raise ValueError("Error intencional")
-                except ValueError:
-                    # El rollback ya se ejecuto automaticamente
-                    print("Transaccion revertida")
-
-        Note:
-            Estrategia de conexion:
-            
-            1. **Fase 1**: Intenta autenticacion SQL (UID/PWD) hasta max_retries veces.
-            2. **Fase 2**: Si Fase 1 falla, intenta Trusted Connection (Windows Auth).
-            3. Hay una pausa de 1 segundo entre reintentos fallidos.
-            4. Usa ODBC Driver 17 for SQL Server.
-            5. Timeout de conexion: 30 segundos.
-
-        Warning:
-            - La conexion debe usarse dentro de un bloque ``with``.
-            - No reutilizar el objeto de conexion fuera del contexto.
-            - El commit/rollback se maneja automaticamente.
         """
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
@@ -219,7 +167,6 @@ def HU8_GenerarReportesCxP():
         usuario = cfg['UsuarioBaseDatos']
         contrasena = cfg['ClaveBaseDatos']
         
-        # Cadenas de conexion para los dos metodos soportados
         conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
@@ -289,14 +236,6 @@ def HU8_GenerarReportesCxP():
         """
         Actualiza específicamente los ítems de insumos (InsumoPDF, InsumoXML) 
         en la tabla [dbo].[CxP.Comparativa].
-        
-        Args:
-            registro (dict | pd.Series): Registro con ID_dp.
-            cx (pyodbc.Connection): Conexión activa.
-            nit (str): NIT del proveedor.
-            factura (str): Número de factura.
-            nombre_item (str): 'InsumoPDF' o 'InsumoXML'.
-            valor_insumo (str): El valor a guardar (ej: 'SI', 'NO', o la ruta).
         """
         cur = cx.cursor()
         id_reg = registro.get('ID_dp', '')
@@ -375,15 +314,6 @@ def HU8_GenerarReportesCxP():
     def crear_arbol_carpetas(ruta_base, fecha_ejecucion, ult_numero):
         """
         Crea el árbol completo de carpetas según la estructura requerida.
-        
-        Estructura:
-            /AÑO/##. MES/CONSOLIDADOS
-            /AÑO/##. MES/INSUMO DE RETORNO
-            /AÑO/##. MES/DÍA/RESULTADOS BOT CXP
-            /AÑO/##. MES/DÍA/EJECUCION ## CXP/CXP/INSUMOS/[subcarpetas]
-            /AÑO/MATERIA PRIMA GRANOS/AÑO/##. MES/INSUMO|RESULTADO
-            /AÑO/MATERIA PRIMA MAÍZ/AÑO/##. MES/INSUMO|RESULTADO
-            /AÑO/COMERCIALIZADOS/AÑO/##. MES/DÍA/INSUMO|RESULTADO
         """
         try:
             anio = fecha_ejecucion.year
@@ -462,13 +392,6 @@ def HU8_GenerarReportesCxP():
     def determinar_carpeta_destino(resultado_final, tipo_documento):
         """
         Determina la carpeta de destino según el resultado final y tipo de documento.
-        
-        Args:
-            resultado_final: Estado del registro (ResultadoFinalAntesEventos)
-            tipo_documento: FV, NC o ND
-        
-        Returns:
-            str: Nombre de la carpeta destino
         """
         resultado = safe_str(resultado_final).upper()
         tipo = safe_str(tipo_documento).upper()
@@ -538,9 +461,6 @@ def HU8_GenerarReportesCxP():
     def verificar_archivos_insumo(ruta_respaldo, nombre_archivos):
         """
         Verifica la existencia de archivos XML y PDF a partir de un nombre que ya incluye extensión.
-        
-        Returns:
-            tuple: (xml_encontrado, pdf_encontrado, ruta_xml, ruta_pdf)
         """
         xml_encontrado = False
         pdf_encontrado = False
@@ -582,9 +502,6 @@ def HU8_GenerarReportesCxP():
         """
         Mueve los archivos XML y PDF a la carpeta de destino.
         También copia a comercializados si OC inicia con 50.
-        
-        Returns:
-            str: Nueva ruta de respaldo
         """
         nueva_ruta = None
         
@@ -689,10 +606,6 @@ def HU8_GenerarReportesCxP():
     def crear_excel_multihoja(hojas_data, ruta_archivo):
         """
         Crea un archivo Excel con múltiples hojas.
-        
-        Args:
-            hojas_data: dict {nombre_hoja: DataFrame}
-            ruta_archivo: Ruta del archivo a crear
         """
         try:
             wb = Workbook()
@@ -734,8 +647,8 @@ def HU8_GenerarReportesCxP():
     
     def generar_reporte_cxp(df_main, df_detalles, df_historico, rutabase):
         """
-        Toma los 3 dataframes (simulando las 3 tablas SQL), hace los cruces (merges)
-        y genera un Excel formateado.
+        Genera el Reporte de Ejecución CXP (Diario).
+        Cruza la información principal, detalles y el histórico de órdenes.
         """
         
         # ---------------------------------------------------------
@@ -743,7 +656,6 @@ def HU8_GenerarReportesCxP():
         # ---------------------------------------------------------
         
         # Paso A: Limpieza de claves para asegurar que los cruces funcionen
-        # Convertimos a string y quitamos espacios para evitar errores de llave
         df_main['nit_join'] = df_main['nit_emisor_o_nit_del_proveedor'].astype(str).str.strip()
         df_main['factura_join'] = df_main['numero_de_factura'].astype(str).str.strip()
         df_main['doc_compra_join'] = df_main['numero_de_liquidacion_u_orden_de_compra'].astype(str).str.strip()
@@ -755,15 +667,13 @@ def HU8_GenerarReportesCxP():
         df_historico['doc_compra_join'] = df_historico['DocCompra'].astype(str).str.strip()
 
         # Paso B: Lógica de la Tabla 3 (HistoricoOrdenesCompra)
-        # "Solo necesitamos extraer el primer valor obtenido" -> eliminamos duplicados manteniendo el primero
         df_historico_unique = df_historico.drop_duplicates(subset=['nit_join', 'doc_compra_join'], keep='first')
 
         # Paso C: Cruce Principal (Main + Detalles)
-        # Esto expande la fila principal por cada Item encontrado en la tabla de detalles
         df_merged = pd.merge(
             df_main,
             df_detalles,
-            how='left', # Usamos left para no perder la cabecera si no hay detalles, o 'inner' si es estricto
+            how='left',
             left_on=['nit_join', 'factura_join'],
             right_on=['nit_join', 'factura_join']
         )
@@ -780,7 +690,6 @@ def HU8_GenerarReportesCxP():
         # ---------------------------------------------------------
         # 2. RENOMBRADO Y SELECCIÓN DE COLUMNAS (MAPPING)
         # ---------------------------------------------------------
-        # Mapeamos las columnas de SQL a los nombres bonitos del Excel final
         column_mapping = {
             'executionDate': 'Fecha de ejecución',
             'Fecha_de_retoma_antes_de_contabilizacion': 'Fecha 1ra Revisión',
@@ -808,28 +717,18 @@ def HU8_GenerarReportesCxP():
         cols_to_keep = [c for c in column_mapping.keys() if c in df_final.columns]
         df_final = df_final[cols_to_keep].rename(columns=column_mapping)
 
-        # Reordenamos para que quede lógico (opcional)
         desired_order = list(column_mapping.values())
-        # Filtramos desired_order para asegurarnos de que solo pedimos columnas que existen
         final_cols = [c for c in desired_order if c in df_final.columns]
         df_final = df_final[final_cols]
 
         # ---------------------------------------------------------
         # 3. GENERACIÓN DEL EXCEL "HERMOSO"
         # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%d%m%Y_%H%M')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Reporte_de_ejecución_CXP_{str_fecha_hora}.xlsx"
-        
         ruta_completa = os.path.join(rutabase, nombre_archivo)
         
-        # Diccionario para separar las hojas
         sheets_config = {
             'FACTURAS': 'FV',
             'NC': 'NC',
@@ -839,13 +738,12 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # --- Estilos Personalizados ---
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
                 'valign': 'vcenter',
                 'align': 'center',
-                'fg_color': '#1F4E78', # Azul oscuro profesional
+                'fg_color': '#1F4E78',
                 'font_color': '#FFFFFF',
                 'border': 1
             })
@@ -855,41 +753,30 @@ def HU8_GenerarReportesCxP():
             text_format = workbook.add_format({'border': 1})
 
             for sheet_name, doc_type in sheets_config.items():
-                # Filtramos por tipo de documento
                 df_sheet = df_final[df_final['Tipo Documento'] == doc_type].copy()
                 
                 if df_sheet.empty:
-                    continue # Si no hay datos de ese tipo, saltamos
+                    continue
 
-                # Escribimos los datos en Excel (sin el índice de pandas)
                 df_sheet.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
                 
-                # --- Formateo de la Hoja ---
                 worksheet = writer.sheets[sheet_name]
-                
-                # Obtener dimensiones
                 (max_row, max_col) = df_sheet.shape
                 
-                # Crear una tabla de Excel real (añade filtros y estilo automático)
                 column_settings = [{'header': column} for column in df_sheet.columns]
                 worksheet.add_table(0, 0, max_row, max_col - 1, {
                     'columns': column_settings,
-                    'style': 'TableStyleMedium2', # Estilo azul/gris limpio
+                    'style': 'TableStyleMedium2',
                     'name': f'Tabla_{sheet_name}'
                 })
 
-                # Sobrescribir los encabezados con nuestro formato personalizado (opcional, para forzar el azul oscuro)
                 for col_num, value in enumerate(df_sheet.columns):
                     worksheet.write(0, col_num, value, header_format)
 
-                # Ajuste de ancho de columnas y formatos de celdas
                 for i, col in enumerate(df_sheet.columns):
-                    # Ancho estimado basado en la longitud del encabezado + un poco más
                     column_len = max(df_sheet[col].astype(str).map(len).max(), len(col)) + 2
-                    # Tope máximo de ancho
                     column_len = min(column_len, 50) 
                     
-                    # Aplicar formatos según el nombre de la columna
                     if 'Fecha' in col:
                         worksheet.set_column(i, i, 12, date_format)
                     elif 'Valor' in col:
@@ -902,24 +789,14 @@ def HU8_GenerarReportesCxP():
     def generar_reporte_granos(df_main, df_detalles, rutabase):
         """
         Genera el reporte de GRANOS en un archivo Excel con UNA SOLA HOJA.
-        Combina la tabla principal (DocumentsProcessing) con los detalles (Comparativa).
         """
         
-        # ---------------------------------------------------------
-        # 1. PREPARACIÓN Y CRUCE DE DATOS
-        # ---------------------------------------------------------
-        
-        # A. Limpieza de claves para asegurar que el cruce (Join) funcione perfecto
-        # Convertimos a string y quitamos espacios y decimales extraños (.0) si existen
         df_main['nit_join'] = df_main['nit_emisor_o_nit_del_proveedor'].apply(lambda x: str(x).strip().replace('.0', '') if pd.notnull(x) else '')
         df_main['factura_join'] = df_main['numero_de_factura'].astype(str).str.strip()
         
         df_detalles['nit_join'] = df_detalles['NIT'].apply(lambda x: str(x).strip().replace('.0', '') if pd.notnull(x) else '')
         df_detalles['factura_join'] = df_detalles['Factura'].astype(str).str.strip()
 
-        # B. Cruce (Merge)
-        # Hacemos un LEFT JOIN para mantener todos los registros de la tabla principal
-        # y traer los detalles (Item, Valor XML, etc.) si existen.
         df_final = pd.merge(
             df_main,
             df_detalles, 
@@ -928,12 +805,7 @@ def HU8_GenerarReportesCxP():
             right_on=['nit_join', 'factura_join']
         )
 
-        # ---------------------------------------------------------
-        # 2. DEFINICIÓN Y RENOMBRADO DE COLUMNAS
-        # ---------------------------------------------------------
-        # Mapeamos las columnas SQL a nombres bonitos para el Excel
         column_mapping = {
-            # --- Tabla Principal ---
             'executionDate': 'Fecha de ejecución',
             'Fecha_de_retoma_antes_de_contabilizacion': 'Fecha de retoma',
             'executionNum': 'ID ejecución',
@@ -944,8 +816,6 @@ def HU8_GenerarReportesCxP():
             'nombre_emisor': 'Nombre Proveedor',
             'numero_de_factura': 'Factura',
             'ResultadoFinalAntesEventos': 'Estado validación antes de eventos',
-            
-            # --- Tabla Comparativa (Detalles) ---
             'Item': 'Item',
             'Valor_XML': 'Valor XML',
             'Valor_Orden_de_Compra': 'Valor Orden de Compra',
@@ -953,48 +823,34 @@ def HU8_GenerarReportesCxP():
             'Aprobado': 'Aprobado'
         }
 
-        # Filtramos solo las columnas que existen y las renombramos
         cols_to_keep = [c for c in column_mapping.keys() if c in df_final.columns]
         df_final = df_final[cols_to_keep].rename(columns=column_mapping)
 
-        # Ordenamos las columnas de forma lógica para la lectura
         desired_order = [
             'Fecha de ejecución', 'Fecha de retoma', 'ID ejecución', 'ID Registro', 
             'Tipo de documento', 'Orden de Compra', 'NIT', 'Nombre Proveedor', 'Factura', 
             'Item', 'Valor XML', 'Valor Orden de Compra', 'Valor OC Comercializados', 
             'Aprobado', 'Estado validación antes de eventos'
         ]
-        # Seleccionamos solo las que logramos obtener
         final_cols = [c for c in desired_order if c in df_final.columns]
         df_final = df_final[final_cols]
 
-        # ---------------------------------------------------------
-        # 3. GENERACIÓN DEL EXCEL (DISEÑO)
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%d%m%Y_%H%M')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Reporte_de_ejecución_GRANOS_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
-        
-        sheet_name = "Facturas" # Única hoja solicitada
+        sheet_name = "Facturas"
 
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # --- Estilos Personalizados ---
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
                 'valign': 'vcenter',
                 'align': 'center',
-                'fg_color': '#1F4E78', # Azul oscuro elegante
+                'fg_color': '#1F4E78',
                 'font_color': '#FFFFFF',
                 'border': 1
             })
@@ -1003,33 +859,25 @@ def HU8_GenerarReportesCxP():
             money_format = workbook.add_format({'num_format': '#,##0.00', 'border': 1})
             text_format = workbook.add_format({'border': 1})
 
-            # --- Escribir Datos ---
-            # Escribimos el dataframe empezando en la fila 2 (row 1) para dejar espacio al encabezado de tabla
             df_final.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
             
             worksheet = writer.sheets[sheet_name]
             (max_row, max_col) = df_final.shape
             
-            # --- Crear Tabla de Excel ---
-            # Esto añade automáticamente los filtros y el diseño de bandas
             column_settings = [{'header': col} for col in df_final.columns]
             worksheet.add_table(0, 0, max_row, max_col - 1, {
                 'columns': column_settings,
-                'style': 'TableStyleMedium2', # Estilo azul medio
+                'style': 'TableStyleMedium2',
                 'name': 'TablaGranos'
             })
             
-            # Sobrescribimos los encabezados para aplicar nuestro color azul oscuro exacto
             for col_num, value in enumerate(df_final.columns):
                 worksheet.write(0, col_num, value, header_format)
 
-            # --- Ajuste Automático de Ancho de Columnas ---
             for i, col in enumerate(df_final.columns):
-                # Calcular ancho basado en el contenido más largo o el título
                 col_len = max(df_final[col].astype(str).map(len).max(), len(col)) + 3
-                col_len = min(col_len, 60) # Poner un límite para que no sea gigante
+                col_len = min(col_len, 60)
                 
-                # Aplicar formato según el tipo de dato
                 if 'Fecha' in col:
                     worksheet.set_column(i, i, 14, date_format)
                 elif 'Valor' in col:
@@ -1041,25 +889,15 @@ def HU8_GenerarReportesCxP():
     
     def generar_reporte_maiz(df_main, df_detalles, rutabase):
         """
-        Genera el reporte de GRANOS en un archivo Excel con UNA SOLA HOJA.
-        Combina la tabla principal (DocumentsProcessing) con los detalles (Comparativa).
+        Genera el reporte de MAIZ en un archivo Excel con UNA SOLA HOJA.
         """
         
-        # ---------------------------------------------------------
-        # 1. PREPARACIÓN Y CRUCE DE DATOS
-        # ---------------------------------------------------------
-        
-        # A. Limpieza de claves para asegurar que el cruce (Join) funcione perfecto
-        # Convertimos a string y quitamos espacios y decimales extraños (.0) si existen
         df_main['nit_join'] = df_main['nit_emisor_o_nit_del_proveedor'].apply(lambda x: str(x).strip().replace('.0', '') if pd.notnull(x) else '')
         df_main['factura_join'] = df_main['numero_de_factura'].astype(str).str.strip()
         
         df_detalles['nit_join'] = df_detalles['NIT'].apply(lambda x: str(x).strip().replace('.0', '') if pd.notnull(x) else '')
         df_detalles['factura_join'] = df_detalles['Factura'].astype(str).str.strip()
 
-        # B. Cruce (Merge)
-        # Hacemos un LEFT JOIN para mantener todos los registros de la tabla principal
-        # y traer los detalles (Item, Valor XML, etc.) si existen.
         df_final = pd.merge(
             df_main,
             df_detalles, 
@@ -1068,12 +906,7 @@ def HU8_GenerarReportesCxP():
             right_on=['nit_join', 'factura_join']
         )
 
-        # ---------------------------------------------------------
-        # 2. DEFINICIÓN Y RENOMBRADO DE COLUMNAS
-        # ---------------------------------------------------------
-        # Mapeamos las columnas SQL a nombres bonitos para el Excel
         column_mapping = {
-            # --- Tabla Principal ---
             'executionDate': 'Fecha de ejecución',
             'Fecha_de_retoma_antes_de_contabilizacion': 'Fecha de retoma',
             'executionNum': 'ID ejecución',
@@ -1084,8 +917,6 @@ def HU8_GenerarReportesCxP():
             'nombre_emisor': 'Nombre Proveedor',
             'numero_de_factura': 'Factura',
             'ResultadoFinalAntesEventos': 'Estado validación antes de eventos',
-            
-            # --- Tabla Comparativa (Detalles) ---
             'Item': 'Item',
             'Valor_XML': 'Valor XML',
             'Valor_Orden_de_Compra': 'Valor Orden de Compra',
@@ -1093,48 +924,35 @@ def HU8_GenerarReportesCxP():
             'Aprobado': 'Aprobado'
         }
 
-        # Filtramos solo las columnas que existen y las renombramos
         cols_to_keep = [c for c in column_mapping.keys() if c in df_final.columns]
         df_final = df_final[cols_to_keep].rename(columns=column_mapping)
 
-        # Ordenamos las columnas de forma lógica para la lectura
         desired_order = [
             'Fecha de ejecución', 'Fecha de retoma', 'ID ejecución', 'ID Registro', 
             'Tipo de documento', 'Orden de Compra', 'NIT', 'Nombre Proveedor', 'Factura', 
             'Item', 'Valor XML', 'Valor Orden de Compra', 'Valor OC Comercializados', 
             'Aprobado', 'Estado validación antes de eventos'
         ]
-        # Seleccionamos solo las que logramos obtener
         final_cols = [c for c in desired_order if c in df_final.columns]
         df_final = df_final[final_cols]
 
-        # ---------------------------------------------------------
-        # 3. GENERACIÓN DEL EXCEL (DISEÑO)
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%d%m%Y_%H%M')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Reporte_de_ejecución_MAIZ_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
         
-        sheet_name = "Facturas" # Única hoja solicitada
+        sheet_name = "Facturas"
 
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # --- Estilos Personalizados ---
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
                 'valign': 'vcenter',
                 'align': 'center',
-                'fg_color': '#1F4E78', # Azul oscuro elegante
+                'fg_color': '#1F4E78',
                 'font_color': '#FFFFFF',
                 'border': 1
             })
@@ -1143,33 +961,25 @@ def HU8_GenerarReportesCxP():
             money_format = workbook.add_format({'num_format': '#,##0.00', 'border': 1})
             text_format = workbook.add_format({'border': 1})
 
-            # --- Escribir Datos ---
-            # Escribimos el dataframe empezando en la fila 2 (row 1) para dejar espacio al encabezado de tabla
             df_final.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
             
             worksheet = writer.sheets[sheet_name]
             (max_row, max_col) = df_final.shape
             
-            # --- Crear Tabla de Excel ---
-            # Esto añade automáticamente los filtros y el diseño de bandas
             column_settings = [{'header': col} for col in df_final.columns]
             worksheet.add_table(0, 0, max_row, max_col - 1, {
                 'columns': column_settings,
-                'style': 'TableStyleMedium2', # Estilo azul medio
+                'style': 'TableStyleMedium2',
                 'name': 'TablaGranos'
             })
             
-            # Sobrescribimos los encabezados para aplicar nuestro color azul oscuro exacto
             for col_num, value in enumerate(df_final.columns):
                 worksheet.write(0, col_num, value, header_format)
 
-            # --- Ajuste Automático de Ancho de Columnas ---
             for i, col in enumerate(df_final.columns):
-                # Calcular ancho basado en el contenido más largo o el título
                 col_len = max(df_final[col].astype(str).map(len).max(), len(col)) + 3
-                col_len = min(col_len, 60) # Poner un límite para que no sea gigante
+                col_len = min(col_len, 60)
                 
-                # Aplicar formato según el tipo de dato
                 if 'Fecha' in col:
                     worksheet.set_column(i, i, 14, date_format)
                 elif 'Valor' in col:
@@ -1181,16 +991,9 @@ def HU8_GenerarReportesCxP():
     
     def generar_reporte_comercializados(df_main, df_detalles, rutabase):
         """
-        Toma los 3 dataframes (simulando las 3 tablas SQL), hace los cruces (merges)
-        y genera un Excel formateado.
+        Genera el reporte de COMERCIALIZADOS.
         """
         
-        # ---------------------------------------------------------
-        # 1. PREPARACIÓN DE DATOS (LÓGICA SQL EN PANDAS)
-        # ---------------------------------------------------------
-        
-        # Paso A: Limpieza de claves para asegurar que los cruces funcionen
-        # Convertimos a string y quitamos espacios para evitar errores de llave
         df_main['nit_join'] = df_main['nit_emisor_o_nit_del_proveedor'].astype(str).str.strip()
         df_main['factura_join'] = df_main['numero_de_factura'].astype(str).str.strip()
         df_main['doc_compra_join'] = df_main['numero_de_liquidacion_u_orden_de_compra'].astype(str).str.strip()
@@ -1198,25 +1001,16 @@ def HU8_GenerarReportesCxP():
         df_detalles['nit_join'] = df_detalles['NIT'].astype(str).str.strip()
         df_detalles['factura_join'] = df_detalles['Factura'].astype(str).str.strip()
 
-
-        # Paso B: Lógica de la Tabla 3 (HistoricoOrdenesCompra)
-        # "Solo necesitamos extraer el primer valor obtenido" -> eliminamos duplicados manteniendo el primero
-        df_historico_unique = df_historico.drop_duplicates(subset=['nit_join', 'doc_compra_join'], keep='first')
-
-        # Paso C: Cruce Principal (Main + Detalles)
-        # Esto expande la fila principal por cada Item encontrado en la tabla de detalles
         df_merged = pd.merge(
             df_main,
             df_detalles,
-            how='left', # Usamos left para no perder la cabecera si no hay detalles, o 'inner' si es estricto
+            how='left',
             left_on=['nit_join', 'factura_join'],
             right_on=['nit_join', 'factura_join']
         )
 
-        # ---------------------------------------------------------
-        # 2. RENOMBRADO Y SELECCIÓN DE COLUMNAS (MAPPING)
-        # ---------------------------------------------------------
-        # Mapeamos las columnas de SQL a los nombres bonitos del Excel final
+        df_final = df_merged
+
         column_mapping = {
             'executionDate': 'Fecha de ejecución',
             'Fecha_de_retoma_antes_de_contabilizacion': 'Fecha 1ra Revisión',
@@ -1224,11 +1018,10 @@ def HU8_GenerarReportesCxP():
             'ID': 'ID Registro',
             'documenttype': 'Tipo Documento',
             'numero_de_liquidacion_u_orden_de_compra': 'Orden de Compra',
-            'ClaseDePedido': 'Clase de Pedido', # Viene de la tabla 3
             'nit_emisor_o_nit_del_proveedor': 'NIT',
             'nombre_emisor': 'Nombre Proveedor',
             'numero_de_factura': 'Factura',
-            'Item': 'Item', # Viene de la tabla 2
+            'Item': 'Item',
             'Valor_XML': 'Valor XML',
             'Valor_Orden_de_Compra': 'Valor OC',
             'Valor_Orden_de_Compra_Comercializados': 'Valor OC Comercializados',
@@ -1236,32 +1029,19 @@ def HU8_GenerarReportesCxP():
             'ResultadoFinalAntesEventos': 'Estado Validación',
         }
 
-        # Seleccionamos solo las columnas que existen en el mapping y las renombramos
         cols_to_keep = [c for c in column_mapping.keys() if c in df_final.columns]
         df_final = df_final[cols_to_keep].rename(columns=column_mapping)
 
-        # Reordenamos para que quede lógico (opcional)
         desired_order = list(column_mapping.values())
-        # Filtramos desired_order para asegurarnos de que solo pedimos columnas que existen
         final_cols = [c for c in desired_order if c in df_final.columns]
         df_final = df_final[final_cols]
 
-        # ---------------------------------------------------------
-        # 3. GENERACIÓN DEL EXCEL "HERMOSO"
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%d%m%Y_%H%M')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Reporte_de_ejecución_COMERCIALIZADOS_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
         
-        # Diccionario para separar las hojas
         sheets_config = {
             'FACTURAS': 'FV'
         }
@@ -1269,13 +1049,12 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # --- Estilos Personalizados ---
             header_format = workbook.add_format({
                 'bold': True,
                 'text_wrap': True,
                 'valign': 'vcenter',
                 'align': 'center',
-                'fg_color': '#1F4E78', # Azul oscuro profesional
+                'fg_color': '#1F4E78',
                 'font_color': '#FFFFFF',
                 'border': 1
             })
@@ -1285,41 +1064,30 @@ def HU8_GenerarReportesCxP():
             text_format = workbook.add_format({'border': 1})
 
             for sheet_name, doc_type in sheets_config.items():
-                # Filtramos por tipo de documento
                 df_sheet = df_final[df_final['Tipo Documento'] == doc_type].copy()
                 
                 if df_sheet.empty:
-                    continue # Si no hay datos de ese tipo, saltamos
+                    continue
 
-                # Escribimos los datos en Excel (sin el índice de pandas)
                 df_sheet.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
                 
-                # --- Formateo de la Hoja ---
                 worksheet = writer.sheets[sheet_name]
-                
-                # Obtener dimensiones
                 (max_row, max_col) = df_sheet.shape
                 
-                # Crear una tabla de Excel real (añade filtros y estilo automático)
                 column_settings = [{'header': column} for column in df_sheet.columns]
                 worksheet.add_table(0, 0, max_row, max_col - 1, {
                     'columns': column_settings,
-                    'style': 'TableStyleMedium2', # Estilo azul/gris limpio
+                    'style': 'TableStyleMedium2',
                     'name': f'Tabla_{sheet_name}'
                 })
 
-                # Sobrescribir los encabezados con nuestro formato personalizado (opcional, para forzar el azul oscuro)
                 for col_num, value in enumerate(df_sheet.columns):
                     worksheet.write(0, col_num, value, header_format)
 
-                # Ajuste de ancho de columnas y formatos de celdas
                 for i, col in enumerate(df_sheet.columns):
-                    # Ancho estimado basado en la longitud del encabezado + un poco más
                     column_len = max(df_sheet[col].astype(str).map(len).max(), len(col)) + 2
-                    # Tope máximo de ancho
                     column_len = min(column_len, 50) 
                     
-                    # Aplicar formatos según el nombre de la columna
                     if 'Fecha' in col:
                         worksheet.set_column(i, i, 12, date_format)
                     elif 'Valor' in col:
@@ -1331,16 +1099,9 @@ def HU8_GenerarReportesCxP():
 
     def generar_consolidado_novedades(df_historico_novedades, df_docs_processing, df_historico_ordenes, rutabase):
         """
-        Genera el reporte Consolidado CXP con 2 hojas:
-        1. Total Mensual: Filtra df_historico_novedades por el mes anterior a la fecha actual.
-        2. Vigentes: Cruza df_docs_processing con df_historico_ordenes.
+        Genera el reporte Consolidado CXP.
         """
         
-        # ---------------------------------------------------------
-        # 1. LÓGICA HOJA 1: "TOTAL MENSUAL" (MES ANTERIOR)
-        # ---------------------------------------------------------
-        
-        # Calcular el mes y año objetivo (mes anterior al actual)
         hoy = datetime.now()
         primer_dia_este_mes = hoy.replace(day=1)
         ultimo_dia_mes_anterior = primer_dia_este_mes - timedelta(days=1)
@@ -1350,17 +1111,14 @@ def HU8_GenerarReportesCxP():
         
         print(f"📅 Generando reporte para el periodo: {target_year}-{target_month:02d}")
 
-        # Asegurar formato fecha
         df_historico_novedades['Fecha_ejecucion'] = pd.to_datetime(df_historico_novedades['Fecha_ejecucion'])
         
-        # Filtrar registros del mes anterior
         mask_mes_anterior = (
             (df_historico_novedades['Fecha_ejecucion'].dt.month == target_month) & 
             (df_historico_novedades['Fecha_ejecucion'].dt.year == target_year)
         )
         df_total_mensual = df_historico_novedades[mask_mes_anterior].copy()
 
-        # Mapeo de columnas (SQL -> Excel)
         cols_map_1 = {
             'Fecha_ejecucion': 'Fecha de ejecución',
             'Fecha_de_retoma': 'Fecha de primera revisión antes de contab.',
@@ -1375,41 +1133,26 @@ def HU8_GenerarReportesCxP():
             'Observaciones': 'Observaciones'
         }
         
-        # Seleccionar y renombrar
-        # Nota: Si falta alguna columna en el SQL original (como Tipo documento), no la incluimos para no romperlo
         cols_existentes_1 = [c for c in cols_map_1.keys() if c in df_total_mensual.columns]
         df_total_mensual = df_total_mensual[cols_existentes_1].rename(columns=cols_map_1)
 
-
-        # ---------------------------------------------------------
-        # 2. LÓGICA HOJA 2: "VIGENTES" (CRUCE DE TABLAS)
-        # ---------------------------------------------------------
-        
-        # Limpieza de claves para el Join
-        # Convertimos a string y quitamos .0 y espacios
         def limpiar_clave(val):
             return str(val).strip().replace('.0', '') if pd.notnull(val) else ''
 
-        # Preparar claves Tabla 1 (DocumentsProcessing)
         df_docs_processing['nit_join'] = df_docs_processing['nit_emisor_o_nit_del_proveedor'].apply(limpiar_clave)
         df_docs_processing['doc_compra_join'] = df_docs_processing['numero_de_liquidacion_u_orden_de_compra'].apply(limpiar_clave)
         
-        # Preparar claves Tabla 2 (HistoricoOrdenesCompra)
-        # Aseguramos que no haya duplicados para el cruce (opcional, pero recomendado)
-        # df_historico_ordenes = df_historico_ordenes.drop_duplicates(subset=['NitCedula', 'DocCompra']) 
         df_historico_ordenes['nit_join'] = df_historico_ordenes['NitCedula'].apply(limpiar_clave)
         df_historico_ordenes['doc_compra_join'] = df_historico_ordenes['DocCompra'].apply(limpiar_clave)
 
-        # Realizar el cruce (Left Join para mantener todos los vigentes)
         df_vigentes_full = pd.merge(
             df_docs_processing,
-            df_historico_ordenes[['nit_join', 'doc_compra_join', 'FecDoc', 'FecReg']], # Solo traemos lo necesario
+            df_historico_ordenes[['nit_join', 'doc_compra_join', 'FecDoc', 'FecReg']],
             how='left',
             left_on=['nit_join', 'doc_compra_join'],
             right_on=['nit_join', 'doc_compra_join']
         )
 
-        # Mapeo de columnas (SQL -> Excel)
         cols_map_2 = {
             'executionDate': 'Fecha de ejecución',
             'executionNum': 'ID ejecución',
@@ -1419,25 +1162,16 @@ def HU8_GenerarReportesCxP():
             'nombre_emisor': 'Nombre Proveedor',
             'numero_de_liquidacion_u_orden_de_compra': 'Orden de Compra',
             'numero_de_factura': 'Factura',
-            'FecDoc': 'Fec.Doc', # Viene del cruce
-            'FecReg': 'Fec.Reg', # Viene del cruce
+            'FecDoc': 'Fec.Doc',
+            'FecReg': 'Fec.Reg',
             'ObservacionesFase_4': 'Observaciones'
         }
 
         cols_existentes_2 = [c for c in cols_map_2.keys() if c in df_vigentes_full.columns]
         df_vigentes = df_vigentes_full[cols_existentes_2].rename(columns=cols_map_2)
 
-        # ---------------------------------------------------------
-        # 3. GENERACIÓN DEL EXCEL
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%Y%m')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Consolidado_FV_CXP_ConNovedad_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
@@ -1445,7 +1179,6 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Estilos
             header_format = workbook.add_format({
                 'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
                 'fg_color': '#1F4E78', 'font_color': '#FFFFFF', 'border': 1
@@ -1453,7 +1186,6 @@ def HU8_GenerarReportesCxP():
             date_format = workbook.add_format({'num_format': 'yyyy-mm-dd', 'border': 1})
             text_format = workbook.add_format({'border': 1})
 
-            # Configuración de Hojas
             hojas = {
                 'Total Mensual': df_total_mensual,
                 'Vigentes': df_vigentes
@@ -1461,7 +1193,6 @@ def HU8_GenerarReportesCxP():
 
             for sheet_name, df_sheet in hojas.items():
                 if df_sheet.empty:
-                    # Crear hoja vacía con encabezados si no hay datos
                     pd.DataFrame(columns=df_sheet.columns).to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
                 else:
                     df_sheet.to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
@@ -1469,7 +1200,6 @@ def HU8_GenerarReportesCxP():
                 worksheet = writer.sheets[sheet_name]
                 (max_row, max_col) = df_sheet.shape
                 
-                # Tabla Excel
                 if max_row > 0:
                     column_settings = [{'header': col} for col in df_sheet.columns]
                     worksheet.add_table(0, 0, max_row, max_col - 1, {
@@ -1478,15 +1208,12 @@ def HU8_GenerarReportesCxP():
                         'name': f'Tabla_{sheet_name.replace(" ", "")}'
                     })
                 else:
-                    # Escribir solo encabezados manuales si está vacía
                     for col_num, value in enumerate(df_sheet.columns):
                         worksheet.write(0, col_num, value, header_format)
 
-                # Escribir encabezados con formato (sobreescribe los de la tabla para asegurar color)
                 for col_num, value in enumerate(df_sheet.columns):
                     worksheet.write(0, col_num, value, header_format)
 
-                # Ajustar columnas
                 for i, col in enumerate(df_sheet.columns):
                     col_len = max(df_sheet[col].astype(str).map(len).max(), len(col)) + 2 if not df_sheet.empty else len(col) + 2
                     col_len = min(col_len, 50)
@@ -1501,12 +1228,7 @@ def HU8_GenerarReportesCxP():
     def generar_consolidado_no_exitosos_rechazados(df_no_exitosos_sql, df_rechazados_sql, rutabase):
         """
         Genera el reporte Consolidado CXP No Exitosos y Rechazados.
-        Filtra ambos dataframes por el MES ANTERIOR a la fecha actual.
         """
-        
-        # ---------------------------------------------------------
-        # 1. CÁLCULO DEL MES ANTERIOR
-        # ---------------------------------------------------------
         hoy = datetime.now()
         primer_dia_este_mes = hoy.replace(day=1)
         ultimo_dia_mes_anterior = primer_dia_este_mes - timedelta(days=1)
@@ -1516,12 +1238,6 @@ def HU8_GenerarReportesCxP():
         
         print(f"📅 Generando reporte para el periodo: {target_year}-{target_month:02d}")
         
-        # ---------------------------------------------------------
-        # 2. PROCESAMIENTO DE DATAFRAMES
-        # ---------------------------------------------------------
-        
-        # Mapeo de columnas SQL -> Excel
-        # Nota: Omitimos 'Fecha_de_retoma...' ya que no aparece en tus plantillas CSV de este reporte
         col_map = {
             'executionDate': 'Fecha de ejecución',
             'executionNum': 'ID ejecución',
@@ -1535,19 +1251,15 @@ def HU8_GenerarReportesCxP():
         }
 
         def procesar_df(df_input):
-            # Convertir fecha
             df_input['executionDate'] = pd.to_datetime(df_input['executionDate'])
             
-            # Filtrar mes anterior
             mask = (df_input['executionDate'].dt.month == target_month) & \
                 (df_input['executionDate'].dt.year == target_year)
             df_filtered = df_input[mask].copy()
             
-            # Renombrar columnas
             cols_existentes = [c for c in col_map.keys() if c in df_filtered.columns]
             df_final = df_filtered[cols_existentes].rename(columns=col_map)
             
-            # Asegurar orden (opcional, pero se ve mejor)
             orden_deseado = [
                 'Fecha de ejecución', 'ID ejecución', 'ID Registro', 'Tipo de documento',
                 'Orden de Compra', 'NIT', 'Nombre Proveedor', 'Factura', 'Observaciones'
@@ -1555,28 +1267,15 @@ def HU8_GenerarReportesCxP():
             cols_finales = [c for c in orden_deseado if c in df_final.columns]
             return df_final[cols_finales]
 
-        # Procesamos ambas tablas
         df_sheet_no_exitosos = procesar_df(df_no_exitosos_sql)
         df_sheet_rechazados = procesar_df(df_rechazados_sql)
 
-        # ---------------------------------------------------------
-        # 3. GENERACIÓN DEL EXCEL
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%Y%m')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Consolidado_CXP_NoExitososRechazados_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
         
-        # Definir las hojas y sus datos correspondientes
-        # Query 1 (NO EXITOSO) -> Hoja "No Exitosos Vigentes"
-        # Query 2 (RECHAZADO)  -> Hoja "Rechazados Total MES Con Evento"
         sheets_config = {
             'No Exitosos Vigentes': df_sheet_no_exitosos,
             'Rechazados Total MES Con Evento': df_sheet_rechazados
@@ -1585,7 +1284,6 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Estilos
             header_format = workbook.add_format({
                 'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
                 'fg_color': '#1F4E78', 'font_color': '#FFFFFF', 'border': 1
@@ -1594,7 +1292,6 @@ def HU8_GenerarReportesCxP():
             text_format = workbook.add_format({'border': 1})
 
             for sheet_name, df_data in sheets_config.items():
-                # Escribir datos
                 if df_data.empty:
                     pd.DataFrame(columns=df_data.columns).to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
                 else:
@@ -1603,23 +1300,20 @@ def HU8_GenerarReportesCxP():
                 worksheet = writer.sheets[sheet_name]
                 (max_row, max_col) = df_data.shape
                 
-                # Tabla Excel
                 if max_row > 0:
                     column_settings = [{'header': col} for col in df_data.columns]
                     worksheet.add_table(0, 0, max_row, max_col - 1, {
                         'columns': column_settings,
                         'style': 'TableStyleMedium2',
-                        'name': f'T_{sheet_name.split()[0]}' # Nombre tabla simple
+                        'name': f'T_{sheet_name.split()[0]}'
                     })
                 else:
                     for col_num, value in enumerate(df_data.columns):
                         worksheet.write(0, col_num, value, header_format)
 
-                # Formatear encabezados
                 for col_num, value in enumerate(df_data.columns):
                     worksheet.write(0, col_num, value, header_format)
 
-                # Ajustar columnas
                 for i, col in enumerate(df_data.columns):
                     col_len = max(df_data[col].astype(str).map(len).max(), len(col)) + 2 if not df_data.empty else len(col) + 2
                     col_len = min(col_len, 50)
@@ -1633,17 +1327,9 @@ def HU8_GenerarReportesCxP():
     
     def generar_consolidado_pendientes(df_eventos_sql, df_compensacion_sql, df_contabilizacion_sql, rutabase):
         """
-        Genera el reporte Consolidado CXP Pendientes con 3 hojas:
-        1. Pendiente Eventos Vigentes
-        2. Pendiente Compen. Vigentes
-        3. Pendiente Contab. Vigentes
+        Genera el reporte Consolidado CXP Pendientes.
         """
         
-        # ---------------------------------------------------------
-        # 1. MAPEO DE COLUMNAS GENERAL
-        # ---------------------------------------------------------
-        # Definimos cómo se llaman las columnas en SQL y cómo se deben llamar en Excel
-        # Nota: La columna de 'Fecha de retoma' cambia de nombre según la hoja
         base_mapping = {
             'executionDate': 'Fecha de ejecución',
             'executionNum': 'ID ejecución',
@@ -1656,29 +1342,21 @@ def HU8_GenerarReportesCxP():
             'ObservacionesFase_4': 'Observaciones'
         }
 
-        # Función auxiliar para preparar cada DataFrame
         def preparar_hoja(df, nombre_columna_retoma):
-            # 1. Copia para no alterar el original
             df_out = df.copy()
             
-            # 2. Formato de fecha
             if 'executionDate' in df_out.columns:
                 df_out['executionDate'] = pd.to_datetime(df_out['executionDate'])
             if 'Fecha_de_retoma_antes_de_contabilizacion' in df_out.columns:
                 df_out['Fecha_de_retoma_antes_de_contabilizacion'] = pd.to_datetime(df_out['Fecha_de_retoma_antes_de_contabilizacion'])
 
-            # 3. Renombrar la columna de Retoma específicamente para esta hoja
-            # (Si existe en el SQL)
             mapping_especifico = base_mapping.copy()
             if 'Fecha_de_retoma_antes_de_contabilizacion' in df_out.columns:
                 mapping_especifico['Fecha_de_retoma_antes_de_contabilizacion'] = nombre_columna_retoma
                 
-            # 4. Aplicar renombrado
             cols_existentes = [c for c in mapping_especifico.keys() if c in df_out.columns]
             df_out = df_out[cols_existentes].rename(columns=mapping_especifico)
             
-            # 5. Ordenar columnas (Estética)
-            # Intentamos seguir el orden lógico, insertando la fecha de retoma después de fecha de ejecución
             orden_ideal = [
                 'Fecha de ejecución', nombre_columna_retoma, 'ID ejecución', 'ID Registro', 
                 'Tipo de documento', 'Orden de Compra', 'NIT', 'Nombre Proveedor', 
@@ -1688,32 +1366,12 @@ def HU8_GenerarReportesCxP():
             
             return df_out[cols_finales]
 
-        # ---------------------------------------------------------
-        # 2. PROCESAMIENTO DE CADA HOJA
-        # ---------------------------------------------------------
-        
-        # Hoja 1: Pendiente Eventos Vigentes
-        # Asumimos que la columna de retoma aquí se llama "Fecha retoma eventos" o similar
-        # Si los adjuntos originales pedían dejar columnas vacías, aquí solo llenamos lo que trae el SQL.
         df_sheet1 = preparar_hoja(df_eventos_sql, 'Fecha retoma eventos')
-        
-        # Hoja 2: Pendiente Compen. Vigentes
         df_sheet2 = preparar_hoja(df_compensacion_sql, 'Fecha retoma compensación')
-        
-        # Hoja 3: Pendiente Contab. Vigentes
         df_sheet3 = preparar_hoja(df_contabilizacion_sql, 'Fecha retoma contabilización')
 
-        # ---------------------------------------------------------
-        # 3. GENERACIÓN DEL EXCEL
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%Y%m')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Consolidado_CXP_Pendientes_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
@@ -1727,7 +1385,6 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Estilos
             header_format = workbook.add_format({
                 'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
                 'fg_color': '#1F4E78', 'font_color': '#FFFFFF', 'border': 1
@@ -1736,7 +1393,6 @@ def HU8_GenerarReportesCxP():
             text_format = workbook.add_format({'border': 1})
 
             for sheet_name, df_data in sheets_config.items():
-                # Escribir datos empezando en fila 2 (row 1)
                 if df_data.empty:
                     pd.DataFrame(columns=df_data.columns).to_excel(writer, sheet_name=sheet_name, index=False, startrow=1)
                 else:
@@ -1745,7 +1401,6 @@ def HU8_GenerarReportesCxP():
                 worksheet = writer.sheets[sheet_name]
                 (max_row, max_col) = df_data.shape
                 
-                # Crear Tabla con Filtros
                 if max_row > 0:
                     column_settings = [{'header': col} for col in df_data.columns]
                     worksheet.add_table(0, 0, max_row, max_col - 1, {
@@ -1754,20 +1409,16 @@ def HU8_GenerarReportesCxP():
                         'name': f'T_{sheet_name.replace(" ", "").replace(".", "")}'
                     })
                 else:
-                    # Si está vacía, solo pintar encabezados
                     for col_num, value in enumerate(df_data.columns):
                         worksheet.write(0, col_num, value, header_format)
 
-                # Sobrescribir formato de encabezados para asegurar el azul corporativo
                 for col_num, value in enumerate(df_data.columns):
                     worksheet.write(0, col_num, value, header_format)
 
-                # Ajuste de ancho de columnas
                 for i, col in enumerate(df_data.columns):
-                    # Calcular ancho basado en contenido o título
                     len_contenido = df_data[col].astype(str).map(len).max() if not df_data.empty else 0
                     col_len = max(len_contenido, len(col)) + 2
-                    col_len = min(col_len, 50) # Límite máximo
+                    col_len = min(col_len, 50)
                     
                     if 'Fecha' in col:
                         worksheet.set_column(i, i, 14, date_format)
@@ -1778,15 +1429,9 @@ def HU8_GenerarReportesCxP():
     
     def generar_consolidado_nc_nd_actualizado(df_nc_encontrados_sql, df_nc_novedad_sql, df_nd_sql, rutabase):
         """
-        Genera el reporte Consolidado NC ND CXP actualizado con los nuevos campos.
-        1. NC Encontrados-NoExitosos MES (Filtra Mes Anterior)
-        2. NC Con Novedad Vigentes (NO filtra mes, todo el historial)
-        3. ND Total Mes (Filtra Mes Anterior)
+        Genera el reporte Consolidado NC ND CXP.
         """
         
-        # ---------------------------------------------------------
-        # 1. CÁLCULO DEL MES ANTERIOR
-        # ---------------------------------------------------------
         hoy = datetime.now()
         primer_dia_este_mes = hoy.replace(day=1)
         ultimo_dia_mes_anterior = primer_dia_este_mes - timedelta(days=1)
@@ -1794,14 +1439,9 @@ def HU8_GenerarReportesCxP():
         target_month = ultimo_dia_mes_anterior.month
         target_year = ultimo_dia_mes_anterior.year
         
-        # Nombre del archivo con formato MMyyyy (Mes Anterior)
         str_periodo = f"{target_month:02d}{target_year}"
         print(f"📅 Periodo objetivo (Mes Anterior): {target_month:02d}-{target_year}")
 
-        # ---------------------------------------------------------
-        # 2. DEFINICIÓN DE COLUMNAS TARGET (EXCEL)
-        # ---------------------------------------------------------
-        # Definimos las columnas que tendrá cada hoja final
         cols_nc_encontrados = [
             'Fecha de ejecución', 'ID ejecución', 'ID Registro', 'NIT', 'Nombre Proveedor', 
             'Nota Credito', 'Tipo de nota crédito', 'Referencia', 'LineExtensionAmount', 
@@ -1814,32 +1454,23 @@ def HU8_GenerarReportesCxP():
             'Observaciones'
         ]
         
-        # Agregamos LineExtensionAmount aquí también porque tu query trae 'valor_a_pagar'
         cols_nd_total = [
             'Fecha de ejecución', 'ID ejecución', 'ID Registro', 'NIT', 'Nombre Proveedor', 
             'Nota Debito', 'Tipo de nota débito', 'Referencia', 'LineExtensionAmount',
             'Observaciones'
         ]
 
-        # ---------------------------------------------------------
-        # 3. FUNCIÓN DE PROCESAMIENTO
-        # ---------------------------------------------------------
-        
         def procesar_hoja(df_input, columnas_destino, filtrar_mes=False, tipo='NC'):
             df = df_input.copy()
             
-            # 1. Convertir fecha
             if 'executionDate' in df.columns:
                 df['executionDate'] = pd.to_datetime(df['executionDate'])
                 
-            # 2. Filtro de Mes (Solo si aplica)
             if filtrar_mes:
                 mask = (df['executionDate'].dt.month == target_month) & \
                     (df['executionDate'].dt.year == target_year)
                 df = df[mask].copy()
                 
-            # 3. Mapeo de columnas SQL -> Excel
-            # Creamos un diccionario dinámico según el tipo (NC o ND)
             col_doc_num = 'Nota Credito' if tipo == 'NC' else 'Nota Debito'
             col_doc_type = 'Tipo de nota crédito' if tipo == 'NC' else 'Tipo de nota débito'
             col_valor = 'valor_a_pagar' if tipo == 'NC' else 'valor_a_pagar'
@@ -1850,48 +1481,28 @@ def HU8_GenerarReportesCxP():
                 'ID': 'ID Registro',
                 'nit_emisor_o_nit_del_proveedor': 'NIT',
                 'nombre_emisor': 'Nombre Proveedor',
-                'Numero_de_nota_credito': col_doc_num,         # Nuevo campo SQL
-                'Tipo_de_nota_cred_deb': col_doc_type,         # Nuevo campo SQL
-                'NotaCreditoReferenciada': 'Referencia',       # Nuevo campo SQL
-                col_valor: 'LineExtensionAmount',              # Nuevo campo SQL
+                'Numero_de_nota_credito': col_doc_num,
+                'Tipo_de_nota_cred_deb': col_doc_type,
+                'NotaCreditoReferenciada': 'Referencia',
+                col_valor: 'LineExtensionAmount',
                 'ResultadoFinalAntesEventos': 'Estado',
                 'ObservacionesFase_4': 'Observaciones'
             }
             
             df = df.rename(columns=mapping)
             
-            # 4. Asegurar columnas faltantes (rellenar con vacío)
             for col in columnas_destino:
                 if col not in df.columns:
                     df[col] = None
                     
-            # 5. Retornar ordenado
             return df[columnas_destino]
 
-        # ---------------------------------------------------------
-        # 4. PROCESAMIENTO DE CADA DATAFRAME
-        # ---------------------------------------------------------
-        
-        # Hoja 1: NC Encontrados-NoExitosos MES (Filtra Mes Anterior)
         df_s1 = procesar_hoja(df_nc_encontrados_sql, cols_nc_encontrados, filtrar_mes=True, tipo='NC')
-        
-        # Hoja 2: NC Con Novedad Vigentes (NO Filtra Mes, Histórico completo)
         df_s2 = procesar_hoja(df_nc_novedad_sql, cols_nc_novedad, filtrar_mes=False, tipo='NC')
-        
-        # Hoja 3: ND Total Mes (Filtra Mes Anterior)
         df_s3 = procesar_hoja(df_nd_sql, cols_nd_total, filtrar_mes=True, tipo='ND')
 
-        # ---------------------------------------------------------
-        # 5. GENERACIÓN DEL EXCEL
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%Y%m')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Consolidado_NC_ND_CXP_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
@@ -1905,7 +1516,6 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Estilos
             header_format = workbook.add_format({
                 'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
                 'fg_color': '#1F4E78', 'font_color': '#FFFFFF', 'border': 1
@@ -1915,14 +1525,12 @@ def HU8_GenerarReportesCxP():
             text_format = workbook.add_format({'border': 1})
 
             for sheet_name, df_data in sheets_config.items():
-                # Escribir datos
                 start_row = 1
                 df_data.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row)
                 
                 worksheet = writer.sheets[sheet_name]
                 (max_row, max_col) = df_data.shape
                 
-                # Crear Tabla
                 if max_row > 0:
                     column_settings = [{'header': col} for col in df_data.columns]
                     worksheet.add_table(0, 0, max_row, max_col - 1, {
@@ -1934,17 +1542,14 @@ def HU8_GenerarReportesCxP():
                     for col_num, value in enumerate(df_data.columns):
                         worksheet.write(0, col_num, value, header_format)
 
-                # Formatos de columnas
                 for col_num, value in enumerate(df_data.columns):
                     worksheet.write(0, col_num, value, header_format)
 
                 for i, col in enumerate(df_data.columns):
-                    # Ancho automático
                     len_contenido = df_data[col].astype(str).map(len).max() if not df_data.empty else 0
                     col_len = max(len_contenido, len(col)) + 2
                     col_len = min(col_len, 50)
                     
-                    # Aplicar formatos
                     if 'Fecha' in col:
                         worksheet.set_column(i, i, 14, date_format)
                     elif 'Amount' in col or 'Valor' in col:
@@ -1956,25 +1561,14 @@ def HU8_GenerarReportesCxP():
     
     def generar_reporte_anual_global(df_facturas_sql, df_nc_sql, df_nd_sql, rutabase):
         """
-        Genera el reporte Consolidado Global CXP filtrando por el AÑO ANTERIOR.
-        Hojas:
-        1. Total Anual Facturas
-        2. Total Anual Notas Crédito
-        3. Total Anual Notas Débito
+        Genera el reporte Consolidado Global CXP.
         """
         
-        # ---------------------------------------------------------
-        # 1. CÁLCULO DEL AÑO ANTERIOR
-        # ---------------------------------------------------------
         hoy = datetime.now()
         anio_anterior = hoy.year - 1
         
         print(f"📅 Generando reporte anual para el año: {anio_anterior}")
 
-        # ---------------------------------------------------------
-        # 2. DEFINICIÓN DE COLUMNAS OBJETIVO (EXCEL)
-        # ---------------------------------------------------------
-        # Hoja 1: Total Anual Facturas (Incluye columnas de eventos vacías)
         cols_facturas = [
             'Fecha de ejecución', 'ID ejecución', 'ID Registro', 'Tipo de documento', 
             'NIT', 'Nombre Proveedor', 'Orden de Compra', 'Factura', 
@@ -1987,34 +1581,26 @@ def HU8_GenerarReportesCxP():
             'Estado contabilización', 'Estado compensación', 'Observaciones'
         ]
 
-        # Hoja 2: Total Anual Notas Crédito
         cols_nc = [
             'Fecha de ejecución', 'ID ejecución', 'ID Registro', 'Tipo de documento', 
             'NIT', 'Nombre Proveedor', 'Nota Credito', 'Tipo de nota crédito', 
             'Factura', 'Estado validación antes de eventos', 'Observaciones'
         ]
 
-        # Hoja 3: Total Anual Notas Débito
         cols_nd = [
             'Fecha de ejecución', 'ID ejecución', 'ID Registro', 'Tipo de documento', 
             'NIT', 'Nombre Proveedor', 'Factura', 'Nota Debito', 'Tipo de nota débito', 
             'Estado validación antes de eventos', 'Observaciones'
         ]
 
-        # ---------------------------------------------------------
-        # 3. FUNCIÓN DE PROCESAMIENTO
-        # ---------------------------------------------------------
         def procesar_hoja(df_input, target_columns, mapping_especifico):
             df = df_input.copy()
             
-            # 1. Convertir fecha y filtrar por AÑO ANTERIOR
             if 'executionDate' in df.columns:
                 df['executionDate'] = pd.to_datetime(df['executionDate'])
-                # FILTRO CRÍTICO: Solo registros del año pasado
                 mask = (df['executionDate'].dt.year == anio_anterior)
                 df = df[mask].copy()
             
-            # 2. Mapeo General (Común para todas)
             base_mapping = {
                 'executionDate': 'Fecha de ejecución',
                 'executionNum': 'ID ejecución',
@@ -2029,59 +1615,36 @@ def HU8_GenerarReportesCxP():
                 'Estado_contabilizacion': 'Estado contabilización',
                 'EstadoCompensacionFase_7': 'Estado compensación'
             }
-            # Unir con mapeo específico
             base_mapping.update(mapping_especifico)
             
-            # 3. Renombrar
             df = df.rename(columns=base_mapping)
             
-            # 4. Crear columnas vacías para las que faltan (ej. Eventos)
             for col in target_columns:
                 if col not in df.columns:
                     df[col] = None
             
-            # 5. Retornar con las columnas en el orden exacto
             return df[target_columns]
 
-        # ---------------------------------------------------------
-        # 4. EJECUCIÓN DE PROCESAMIENTO
-        # ---------------------------------------------------------
-        
-        # --- Hoja 1: Facturas ---
-        # Nota: Tu query trae Numero_de_nota_credito duplicado. 
-        # Mapeamos el primero a 'Nota Credito'. 'Nota Debito' quedará vacío como se solicitó.
         map_facturas = {
             'Numero_de_nota_credito': 'Nota Credito', 
             'Tipo_de_nota_cred_deb': 'Tipo de nota crédito'
         }
         df_s1 = procesar_hoja(df_facturas_sql, cols_facturas, map_facturas)
         
-        # --- Hoja 2: Notas Crédito ---
         map_nc = {
             'Numero_de_nota_credito': 'Nota Credito',
             'Tipo_de_nota_cred_deb': 'Tipo de nota crédito'
         }
         df_s2 = procesar_hoja(df_nc_sql, cols_nc, map_nc)
         
-        # --- Hoja 3: Notas Débito ---
-        # Aquí el campo SQL 'Numero_de_nota_credito' se mapea a 'Nota Debito' en Excel
         map_nd = {
             'Numero_de_nota_credito': 'Nota Debito',
             'Tipo_de_nota_cred_deb': 'Tipo de nota débito'
         }
         df_s3 = procesar_hoja(df_nd_sql, cols_nd, map_nd)
 
-        # ---------------------------------------------------------
-        # 5. GENERACIÓN DEL EXCEL
-        # ---------------------------------------------------------
-        # 1. Obtener el momento actual
         ahora = datetime.now()
-
-        # 2. Formatear la fecha como string
-        # %d = día, %m = mes, %Y = año (4 dígitos), %H = hora (24h), %M = minuto
         str_fecha_hora = ahora.strftime('%Y')
-
-        # 3. Construir el nombre completo
         nombre_archivo = f"Consolidado_Global_CXP_{str_fecha_hora}.xlsx"
         
         ruta_completa = os.path.join(rutabase, nombre_archivo)
@@ -2095,7 +1658,6 @@ def HU8_GenerarReportesCxP():
         with pd.ExcelWriter(ruta_completa, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Estilos
             header_format = workbook.add_format({
                 'bold': True, 'text_wrap': True, 'valign': 'vcenter', 'align': 'center',
                 'fg_color': '#1F4E78', 'font_color': '#FFFFFF', 'border': 1
@@ -2110,7 +1672,6 @@ def HU8_GenerarReportesCxP():
                 worksheet = writer.sheets[sheet_name]
                 (max_row, max_col) = df_data.shape
                 
-                # Crear Tabla
                 if max_row > 0:
                     column_settings = [{'header': col} for col in df_data.columns]
                     worksheet.add_table(0, 0, max_row, max_col - 1, {
@@ -2122,11 +1683,9 @@ def HU8_GenerarReportesCxP():
                     for col_num, value in enumerate(df_data.columns):
                         worksheet.write(0, col_num, value, header_format)
 
-                # Escribir encabezados con formato
                 for col_num, value in enumerate(df_data.columns):
                     worksheet.write(0, col_num, value, header_format)
 
-                # Ajustar Columnas
                 for i, col in enumerate(df_data.columns):
                     len_contenido = df_data[col].astype(str).map(len).max() if not df_data.empty else 0
                     col_len = max(len_contenido, len(col)) + 2
@@ -2144,59 +1703,35 @@ def HU8_GenerarReportesCxP():
     # =========================================================================
     
     try:
-        print("")
         print("=" * 80)
         print("[INICIO] HU8 - Generación de Reportes CxP")
         print("=" * 80)
         
         t_inicio = time.time()
         
-        # 1. Obtener y validar configuración
         cfg = parse_config(GetVar("vLocDicConfig"))
-        print("[INFO] Configuracion cargada exitosamente")
         
-        # Parámetros de configuración
         ruta_base = cfg.get('RutaFileServer', r'\\172.16.250.222\BOT_Validacion_FV_NC_ND_CXP')
-        #numero_ejecucion = int(cfg.get('NumeroEjecucion', 1))
-        
         fecha_ejecucion = datetime.now()
         
-        # 4. Conectar a BD y procesar
         with crear_conexion_db(cfg) as cx:
         
             print(f"[INFO] Ruta base: {ruta_base}")
-            #print(f"[INFO] Numero ejecucion: {numero_ejecucion}")
             print(f"[INFO] Fecha ejecucion: {fecha_ejecucion}")
             
-            query_num_ejecucion = """
-                SELECT MAX(CAST([executionNum] AS INT)) as max_val 
-                FROM [CxP].[DocumentsProcessing]
-            """
+            query_num_ejecucion = "SELECT MAX(CAST([executionNum] AS INT)) as max_val FROM [CxP].[DocumentsProcessing]"
             
-            # Ejecutas el query
             df_resultado = pd.read_sql(query_num_ejecucion, cx)
-
-            # Extraes el valor escalar
             ultimo_num = df_resultado['max_val'].iloc[0]
             
-            # 2. Verificar acceso a ruta
-            print("\n[PASO 1] Verificando acceso a File Server...")
             if not verificar_acceso_ruta(ruta_base):
                 raise Exception(f"No se tiene acceso a la ruta: {ruta_base}")
-            print("[OK] Acceso verificado")
             
-            # 3. Crear árbol de carpetas
-            print("\n[PASO 2] Creando/verificando arbol de carpetas...")
             rutas = crear_arbol_carpetas(ruta_base, fecha_ejecucion, ultimo_num)
-            print("[OK] Arbol de carpetas listo")
         
-            # 5. Procesar archivos de cada registro
             print("\n[PASO 3] Procesando archivos de registros...")
             
-            query_registros_insumos = """
-                SELECT *
-                FROM [CxP].[DocumentsProcessing]
-            """
+            query_registros_insumos = "SELECT * FROM [CxP].[DocumentsProcessing]"
             
             df_registros_insumos = pd.read_sql(query_registros_insumos, cx)
             print(f"[INFO] {len(df_registros_insumos)} registros para procesar archivos")
@@ -2215,13 +1750,10 @@ def HU8_GenerarReportesCxP():
                     factura = safe_str(reg['numero_de_factura'])
                     estado_xml = str(reg.get('Insumo_XML', '')).strip().lower()
                     estado_pdf = str(reg.get('Insumo_PDF', '')).strip().lower()
-                    insumo_ubicado = str(reg.get('Insumo_reubicado', '')).strip().lower()
                     
                     if estado_xml in ['', 'none', 'nan'] or estado_pdf in ['', 'none', 'nan']:
-                        # Verificar archivos
                         xml_enc, pdf_enc, ruta_xml, ruta_pdf = verificar_archivos_insumo(ruta_respaldo, nombre_archivos)
                         
-                        # Actualizar BD con estado de insumos
                         cur = cx.cursor()
                         cur.execute("""
                             UPDATE [CxP].[DocumentsProcessing]
@@ -2243,20 +1775,19 @@ def HU8_GenerarReportesCxP():
                             carpeta_destino = determinar_carpeta_destino(resultado_final, tipo_doc)
                             ruta_destino_completa = os.path.join(rutas['insumos_cxp'], carpeta_destino)
                             
-                            # Determinar si copiar a comercializados
                             ruta_comercializados = None
                             if numero_oc.startswith('50'):
-                                ruta_comercializadosHU4 = cfg['HU4RutaInsumos']
+                                ruta_comercializados = cfg.get('HU4RutaInsumos')
                             
                             if pdf_enc and not xml_enc:
                                 nueva_ruta = mover_archivos_a_destino(
                                     ruta_pdf, ruta_destino_completa,
-                                    numero_oc, ruta_comercializadosHU4
+                                    numero_oc, ruta_comercializados
                                 )
                             else:
                                 nueva_ruta = mover_archivos_a_destino(
                                     ruta_pdf, ruta_destino_completa,
-                                    numero_oc, ruta_comercializadosHU4
+                                    numero_oc, ruta_comercializados
                                 )
                             
                             if nueva_ruta:
@@ -2272,49 +1803,32 @@ def HU8_GenerarReportesCxP():
                             archivos_procesados += 1
                     
                 except Exception as e:
-                    print("")
-                    print("=" * 80)
-                    print("[ERROR CRITICO] La funcion HU8_GenerarReportesCxP fallo")
-                    print("=" * 80)
-                    print(f"[ERROR] Mensaje: {str(e)}")
-                    print(traceback.format_exc())
-                    print("=" * 80)
-                    
-                    SetVar("vGblStrDetalleError", str(traceback.format_exc()))
-                    SetVar("vGblStrSystemError", "ErrorHU4_4.1")
-                    SetVar("vLocStrResultadoSP", "False")
-                    raise(e)
-            
+                    print(f"[ERROR] Procesando archivo registro {reg['ID']}: {e}")
+                    # No detenemos el loop, intentamos con el siguiente
             
             #REPORTES DIARIOS
             try:
                 print(f"[OK] {archivos_procesados} archivos procesados")
                 
                 with crear_conexion_db(cfg) as cx:
-                    #CONSULTAS
-                    # 2. Cargar Primera Tabla
                     query1 = """
                     SELECT [executionDate], [Fecha_de_retoma_antes_de_contabilizacion], [executionNum], [ID], 
                         [documenttype], [numero_de_liquidacion_u_orden_de_compra], [nit_emisor_o_nit_del_proveedor],
                         [nombre_emisor], [numero_de_factura], [ResultadoFinalAntesEventos], 
                         [Fecha_retoma_contabilizacion], [Estado_contabilizacion]
-                    FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]
+                    FROM [CxP].[DocumentsProcessing]
                     """
                     df_main = pd.read_sql(query1, cx)
 
-                    # 3. Cargar las otras tablas
-                    query2 = "SELECT * FROM [NotificationsPaddy].[dbo].[CxP.Comparativa]"
+                    query2 = "SELECT * FROM [dbo].[CxP.Comparativa]"
                     df_detalles = pd.read_sql(query2, cx)
 
-                    query3 = "SELECT * FROM [NotificationsPaddy].[CxP].[HistoricoOrdenesCompra]"
+                    query3 = "SELECT * FROM [CxP].[HistoricoOrdenesCompra]"
                     df_historico = pd.read_sql(query3, cx)
 
-                    # 4. Generar reporte
                     generar_reporte_cxp(df_main, df_detalles, df_historico, rutas['resultados_dia'])
-                    #REPORTE GENERAL:
                     
-                    #REPORTE GRANOS
-                    
+                    # REPORTE GRANOS
                     query1 = """SELECT 
                             [executionDate]
                             ,[Fecha_de_retoma_antes_de_contabilizacion]
@@ -2328,14 +1842,11 @@ def HU8_GenerarReportesCxP():
                             ,[ResultadoFinalAntesEventos]
                             ,[Fecha_retoma_contabilizacion]
                             ,[Estado_contabilizacion]
-                        FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]
+                        FROM [CxP].[DocumentsProcessing]
                         WHERE [agrupacion] LIKE '%MAPG%'"""
                     
-                    df_main = pd.read_sql(query1, cx)
-                    
-                    generar_reporte_granos(df_main, df_detalles, rutas['granos_resultado'])
-                    
-                    
+                    df_main_granos = pd.read_sql(query1, cx)
+                    generar_reporte_granos(df_main_granos, df_detalles, rutas['granos_resultado'])
                     
                     # REPORTE MAIZ
                     query1 = """SELECT 
@@ -2351,16 +1862,13 @@ def HU8_GenerarReportesCxP():
                             ,[ResultadoFinalAntesEventos]
                             ,[Fecha_retoma_contabilizacion]
                             ,[Estado_contabilizacion]
-                        FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]
+                        FROM [CxP].[DocumentsProcessing]
                         WHERE [agrupacion] LIKE '%MAPM%'"""
                     
-                    df_main = pd.read_sql(query1, cx)
-                    
-                    generar_reporte_maiz(df_main, df_detalles, rutas['granos_resultado'])
+                    df_main_maiz = pd.read_sql(query1, cx)
+                    generar_reporte_maiz(df_main_maiz, df_detalles, rutas['maiz_resultado'])
             
-                
-            
-                    #REPORTE COMERCIALIZADOS:
+                    # REPORTE COMERCIALIZADOS
                     query1 = """SELECT 
                             [executionDate]
                             ,[Fecha_de_retoma_antes_de_contabilizacion]
@@ -2372,182 +1880,52 @@ def HU8_GenerarReportesCxP():
                             ,[nombre_emisor]
                             ,[numero_de_factura]
                             ,[ResultadoFinalAntesEventos]
-                        FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]
+                        FROM [CxP].[DocumentsProcessing]
                         WHERE [numero_de_liquidacion_u_orden_de_compra] LIKE '50%'"""
                         
-                    df_main = pd.read_sql(query1, cx)
+                    df_main_comer = pd.read_sql(query1, cx)
+                    generar_reporte_comercializados(df_main_comer, df_detalles, rutas['comercializados_resultado'])
                     
-                    generar_reporte_comercializados(df_main, df_detalles, rutas['comercializados_resultado'])
-                    
-                    # Obtener el día actual
                     hoy = datetime.now()
 
                     if hoy.day == int(safe_str(cfg['DiaReporteMensualAnual'])):
                         
                         print("✅ Hoy es el dia seleccionado para ejecutar los reportes mensuales")
                         
-                        query1 = """SELECT [Fecha_ejecucion]
-                                    ,[Fecha_de_retoma]
-                                    ,[ID_ejecucion]
-                                    ,[ID_registro]
-                                    ,[Nit]
-                                    ,[Nombre_Proveedor]
-                                    ,[Orden_de_compra]
-                                    ,[Factura]
-                                    ,[Fec_Doc]
-                                    ,[Fec_Reg]
-                                    ,[Observaciones]
-                                FROM [NotificationsPaddy].[CxP].[HistoricoNovedades] ORDER BY Factura"""
-                                
+                        query1 = """SELECT [Fecha_ejecucion],[Fecha_de_retoma],[ID_ejecucion],[ID_registro],[Nit],[Nombre_Proveedor],[Orden_de_compra],[Factura],[Fec_Doc],[Fec_Reg],[Observaciones] FROM [CxP].[HistoricoNovedades] ORDER BY Factura"""
                         df_historico_novedades = pd.read_sql(query1, cx)
                         
-                        query2 = """SELECT 
-                                    [executionDate]
-                                    ,[Fecha_de_retoma_antes_de_contabilizacion]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[documenttype]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[numero_de_liquidacion_u_orden_de_compra]
-                                    ,[numero_de_factura]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%CON NOVEDAD%'
-                                """
-                        
+                        query2 = """SELECT [executionDate],[Fecha_de_retoma_antes_de_contabilizacion],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%CON NOVEDAD%'"""
                         df_docs_processing = pd.read_sql(query2, cx)
                         
                         generar_consolidado_novedades(df_historico_novedades, df_docs_processing, df_historico, rutas['consolidados'])
                         
-                        query1 = """SELECT 
-                                    [executionDate]
-                                    ,[Fecha_de_retoma_antes_de_contabilizacion]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[documenttype]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[numero_de_liquidacion_u_orden_de_compra]
-                                    ,[numero_de_factura]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%RECHAZADO%'
-                                """
+                        query1 = """SELECT [executionDate],[Fecha_de_retoma_antes_de_contabilizacion],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%RECHAZADO%'"""
                         df_rechazados_sql = pd.read_sql(query1, cx)
                         
-                        query2 = """SELECT 
-                                    [executionDate]
-                                    ,[Fecha_de_retoma_antes_de_contabilizacion]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[documenttype]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[numero_de_liquidacion_u_orden_de_compra]
-                                    ,[numero_de_factura]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%NO EXITOSO%'
-                                """
-                        
+                        query2 = """SELECT [executionDate],[Fecha_de_retoma_antes_de_contabilizacion],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%NO EXITOSO%'"""
                         df_no_exitosos_sql = pd.read_sql(query2, cx)
                         
                         generar_consolidado_no_exitosos_rechazados(df_no_exitosos_sql, df_rechazados_sql, rutas['consolidados'])
                         
-                        query1 = """SELECT 
-                                    [executionDate]
-                                    ,[Fecha_de_retoma_antes_de_contabilizacion]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[documenttype]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[numero_de_liquidacion_u_orden_de_compra]
-                                    ,[numero_de_factura]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%PENDIENTE%'"""
-                        
-                        
+                        query1 = """SELECT [executionDate],[Fecha_de_retoma_antes_de_contabilizacion],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE ResultadoFinalAntesEventos LIKE '%PENDIENTE%'"""
                         df_eventos_sql = pd.read_sql(query1, cx)
                         
-                        query2 = """SELECT 
-                                    [executionDate]
-                                    ,[Fecha_de_retoma_antes_de_contabilizacion]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[documenttype]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[numero_de_liquidacion_u_orden_de_compra]
-                                    ,[numero_de_factura]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE EstadoCompensacionFase_7 LIKE '%CONTABILIZACION PENDIENTE%'"""
-                                
+                        query2 = """SELECT [executionDate],[Fecha_de_retoma_antes_de_contabilizacion],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE EstadoCompensacionFase_7 LIKE '%CONTABILIZACION PENDIENTE%'"""
                         df_contabilizacion_sql = pd.read_sql(query2, cx)
                         
-                        query3 = """SELECT 
-                                    [executionDate]
-                                    ,[Fecha_de_retoma_antes_de_contabilizacion]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[documenttype]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[numero_de_liquidacion_u_orden_de_compra]
-                                    ,[numero_de_factura]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE EstadoCompensacionFase_7 LIKE '%COMPENSACION PENDIENTE%'"""
-                                
+                        query3 = """SELECT [executionDate],[Fecha_de_retoma_antes_de_contabilizacion],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE EstadoCompensacionFase_7 LIKE '%COMPENSACION PENDIENTE%'"""
                         df_compensacion_sql = pd.read_sql(query3, cx)
                                 
                         generar_consolidado_pendientes(df_eventos_sql, df_compensacion_sql, df_contabilizacion_sql, rutas['consolidados'])
                         
-                        query1 = """SELECT 
-                                [executionDate]
-                                ,[executionNum]
-                                ,[ID]
-                                ,[nit_emisor_o_nit_del_proveedor]
-                                ,[nombre_emisor]
-                                ,[Numero_de_nota_credito]
-                                ,[Tipo_de_nota_cred_deb]
-                                ,[NotaCreditoReferenciada]
-                                ,[valor_a_pagar]
-                                ,[ResultadoFinalAntesEventos]
-                                ,[ObservacionesFase_4]
-                            FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]  WHERE documenttype = 'NC' 
-                            AND (ResultadoFinalAntesEventos LIKE '%ENCONTRADOS%' OR ResultadoFinalAntesEventos LIKE '%NO EXITOSOS%') """
-                        
+                        query1 = """SELECT [executionDate],[executionNum],[ID],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[NotaCreditoReferenciada],[valor_a_pagar],[ResultadoFinalAntesEventos],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing]  WHERE documenttype = 'NC' AND (ResultadoFinalAntesEventos LIKE '%ENCONTRADOS%' OR ResultadoFinalAntesEventos LIKE '%NO EXITOSOS%') """
                         df_nc_encontrados_sql = pd.read_sql(query1, cx)
                         
-                        quer2 = """SELECT 
-                                    [executionDate]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[Numero_de_nota_credito]
-                                    ,[Tipo_de_nota_cred_deb]
-                                    ,[NotaCreditoReferenciada]
-                                    ,[valor_a_pagar]
-                                    ,[ResultadoFinalAntesEventos]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE documenttype = 'NC'
-                                AND ResultadoFinalAntesEventos LIKE '%CON NOVEDAD%' 
-                                """
-                        
+                        query2 = """SELECT [executionDate],[executionNum],[ID],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[NotaCreditoReferenciada],[valor_a_pagar],[ResultadoFinalAntesEventos],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE documenttype = 'NC' AND ResultadoFinalAntesEventos LIKE '%CON NOVEDAD%'"""
                         df_nc_novedad_sql = pd.read_sql(query2, cx)
                         
-                        query3 = """SELECT 
-                                    [executionDate]
-                                    ,[executionNum]
-                                    ,[ID]
-                                    ,[nit_emisor_o_nit_del_proveedor]
-                                    ,[nombre_emisor]
-                                    ,[Numero_de_nota_credito]
-                                    ,[Tipo_de_nota_cred_deb]
-                                    ,[NotaCreditoReferenciada]
-                                    ,[valor_a_pagar]
-                                    ,[ObservacionesFase_4]
-                                FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE documenttype = 'ND'"""
-                        
+                        query3 = """SELECT [executionDate],[executionNum],[ID],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[NotaCreditoReferenciada],[valor_a_pagar],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE documenttype = 'ND'"""
                         df_nd_sql = pd.read_sql(query3, cx)
                         
                         generar_consolidado_nc_nd_actualizado(df_nc_encontrados_sql, df_nc_novedad_sql, df_nd_sql, rutas['consolidados'])
@@ -2555,131 +1933,38 @@ def HU8_GenerarReportesCxP():
                         hoy = datetime.now()
 
                         if hoy.month == int(safe_str(cfg['MesReporteAnual'])):
-                            
-                            query1 = """SELECT 
-                                        [executionDate]
-                                        ,[executionNum]
-                                        ,[ID]
-                                        ,[documenttype]
-                                        ,[nit_emisor_o_nit_del_proveedor]
-                                        ,[nombre_emisor]
-                                        ,[numero_de_liquidacion_u_orden_de_compra]
-                                        ,[numero_de_factura]
-                                        ,[Numero_de_nota_credito]
-                                        ,[Tipo_de_nota_cred_deb]
-                                        ,[Numero_de_nota_credito]
-                                        ,[Tipo_de_nota_cred_deb]
-                                        ,[ResultadoFinalAntesEventos]
-                                        ,[ObservacionesFase_4]
-                                        ,[Estado_contabilizacion]
-                                        ,[EstadoCompensacionFase_7]
-                                    FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]"""
-                            
+                            query1 = """SELECT [executionDate],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_liquidacion_u_orden_de_compra],[numero_de_factura],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[ResultadoFinalAntesEventos],[ObservacionesFase_4],[Estado_contabilizacion],[EstadoCompensacionFase_7] FROM [CxP].[DocumentsProcessing]"""
                             df_facturas_sql = pd.read_sql(query1, cx)
                             
-                            query2 = """SELECT 
-                                        [executionDate]
-                                        ,[executionNum]
-                                        ,[ID]
-                                        ,[documenttype]
-                                        ,[nit_emisor_o_nit_del_proveedor]
-                                        ,[nombre_emisor]
-                                        ,[numero_de_factura]
-                                        ,[Numero_de_nota_credito]
-                                        ,[Tipo_de_nota_cred_deb]
-                                        ,[ResultadoFinalAntesEventos]
-                                        ,[ObservacionesFase_4]
-                                    FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE documenttype = 'NC'"""
-                            
+                            query2 = """SELECT [executionDate],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_factura],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[ResultadoFinalAntesEventos],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE documenttype = 'NC'"""
                             df_nc_sql = pd.read_sql(query2, cx)
                             
-                            query3 = """SELECT 
-                                        [executionDate]
-                                        ,[executionNum]
-                                        ,[ID]
-                                        ,[documenttype]
-                                        ,[nit_emisor_o_nit_del_proveedor]
-                                        ,[nombre_emisor]
-                                        ,[numero_de_factura]
-                                        ,[Numero_de_nota_credito]
-                                        ,[Tipo_de_nota_cred_deb]
-                                        ,[ResultadoFinalAntesEventos]
-                                        ,[ObservacionesFase_4]
-                                    FROM [NotificationsPaddy].[CxP].[DocumentsProcessing] WHERE documenttype = 'ND'"""
-                                    
+                            query3 = """SELECT [executionDate],[executionNum],[ID],[documenttype],[nit_emisor_o_nit_del_proveedor],[nombre_emisor],[numero_de_factura],[Numero_de_nota_credito],[Tipo_de_nota_cred_deb],[ResultadoFinalAntesEventos],[ObservacionesFase_4] FROM [CxP].[DocumentsProcessing] WHERE documenttype = 'ND'"""
                             df_nd_sql = pd.read_sql(query3, cx)
                             
                             generar_reporte_anual_global(df_facturas_sql, df_nc_sql, df_nd_sql, rutas['global_anual'])
-                        
                     else:
                         print(f"❌ Hoy es día {hoy.day}, no es el dia para generar los reportes mensuales")
                         
             except Exception as e:
-                print("")
-                print("=" * 80)
-                print("[ERROR CRITICO] La funcion HU8_GenerarReportesCxP fallo")
-                print("=" * 80)
-                print(f"[ERROR] Mensaje: {str(e)}")
-                print(traceback.format_exc())
-                print("=" * 80)
-                
+                print(f"[ERROR] Error generando reportes: {e}")
+                traceback.print_exc()
                 SetVar("vGblStrDetalleError", str(traceback.format_exc()))
                 SetVar("vGblStrSystemError", "ErrorHU4_4.1")
                 SetVar("vLocStrResultadoSP", "False")
-                raise(e)
-                        
+                raise e
         
-        # Fin del procesamiento
         tiempo_total = time.time() - t_inicio
-        
-        print("")
-        print("=" * 80)
-        print("[FIN] HU8 - Generación de Reportes CxP completado")
-        print("=" * 80)
-        print("[ESTADISTICAS]")
-        print(f"  Archivos procesados: {archivos_procesados}")
-        print(f"  Tiempo total: {round(tiempo_total, 2)}s")
-        print("=" * 80)
-        
+        print(f"[FIN] HU8 - Generación de Reportes CxP completado. Tiempo: {round(tiempo_total, 2)}s")
         resumen = f"HU8 completada. reportes generados"
-        
         SetVar("vLocStrResultadoSP", "True")
         SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
-        print("")
-        print("=" * 80)
         print("[ERROR CRITICO] La funcion HU8_GenerarReportesCxP fallo")
-        print("=" * 80)
         print(f"[ERROR] Mensaje: {str(e)}")
-        print(traceback.format_exc())
-        print("=" * 80)
-        
+        traceback.print_exc()
         SetVar("vGblStrDetalleError", str(traceback.format_exc()))
         SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         SetVar("vLocStrResultadoSP", "False")
-        raise(e)
-
-
-# Mock para pruebas locales
-if __name__ == "__main__":
-    _mock_vars = {}
-    def GetVar(name):
-        return _mock_vars.get(name, "")
-    def SetVar(name, value):
-        _mock_vars[name] = value
-        print(f"[SetVar] {name} = {value}")
-    
-    _mock_vars["vLocDicConfig"] = '''{
-        "ServidorBaseDatos": "localhost\SQLEXPRESS",
-        "NombreBaseDatos": "NotificationsPaddy",
-        "RutaFileServer": "C:/Users/diego/Desktop/insumosprueba",
-        "NumeroEjecucion": 1,
-        "UsuarioBaseDatos":"aa",
-        "ClaveBaseDatos":"aa",
-    }'''
-    _mock_vars["vGblStrUsuarioBaseDatos"] = "sa"
-    _mock_vars["vGblStrClaveBaseDatos"] = "password"
-    
-    print("Ejecutando prueba local...")
-    HU8_GenerarReportesCxP()
+        raise e

@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Operaciones de archivo: Copiar archivos físicos (Punto I).
+
+LOGICA:
+Realiza copias de seguridad o traslados de archivos para documentos de tipo liquidación/comercializados.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 async def ejecutar_FileOps_PuntoI_COPIAR():
     import asyncio
     import json

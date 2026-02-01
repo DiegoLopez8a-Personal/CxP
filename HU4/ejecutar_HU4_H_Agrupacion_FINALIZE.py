@@ -1,3 +1,4 @@
+# Author: Diego Ivan Lopez Ochoa
 async def ejecutar_HU4_H_Agrupacion_FINALIZE():
     """
     Ejecuta [CxP].[HU4_Punto_H_Agrupacion] en modo FINALIZE.

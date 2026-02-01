@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Finalizar validación de números de liquidación (Serie 50).
+
+LOGICA:
+Cierra el procesamiento para documentos de comercializados (que inician con 50).
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 async def ejecutar_HU4_I_NumLiquidacion_50_FINALIZE():
     import asyncio
     import pyodbc

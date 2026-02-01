@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Gestión de estados finales.
+
+LOGICA:
+Actualiza el estado final de los documentos (Aprobado/Rechazado) en la tabla principal tras pasar todas las validaciones.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def PostProcesamiento_EstadosFinales():
     import json
     import ast
@@ -574,4 +585,4 @@ def PostProcesamiento_EstadosFinales():
         SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         SetVar("vLocStrResultadoSP", "False")
         
-        return False, str(e), None, {}       
+        return False, str(e), None, {}

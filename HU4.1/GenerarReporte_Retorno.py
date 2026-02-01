@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Generación de insumo de retorno.
+
+LOGICA:
+Genera un archivo Excel/CSV con el resultado del procesamiento para ser devuelto al usuario o sistema origen.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def GenerarReporte_Retorno():
     import json
     import ast

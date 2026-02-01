@@ -1,3 +1,4 @@
+# Author: Diego Ivan Lopez Ochoa
 async def ejecutar_HU4_H_Agrupacion_QUEUE():
     """
     Ejecuta [CxP].[HU4_H_Agrupacion] en modo QUEUE.

@@ -1,136 +1,62 @@
-# HU4.2 - Validación Automática de Notas Crédito y Débito (RPA)
+# HU4.2_ValidarNC_ND.py
 
 ## 📄 Descripción General
-Este script (`HU4.2_ValidarNC_ND.py`) es un componente de automatización diseñado para la plataforma **Rocketbot**. Su función principal es validar técnica y financieramente las Notas Crédito (NC) y Notas Débito (ND) almacenadas en la base de datos intermedia `[CxP].[DocumentsProcessing]`.
 
-El script realiza cruces de información contra Facturas (FV), valida reglas de negocio (NITs, códigos tributarios, fechas) y genera trazabilidad detallada en tablas espejo y reportes de novedades en Excel.
+Este script implementa la lógica de validación para **Notas Crédito (NC)** y **Notas Débito (ND)**, correspondiente a la Historia de Usuario 4.2.
 
-**Versión:** 4.0 (Estandarizada ZPAF)
-**Entorno:** Python 3.x (Integrado en Rocketbot)
+Su objetivo principal es verificar que estos documentos electrónicos cumplan con las reglas de negocio, tributarias y financieras antes de ser procesados o contabilizados en el sistema. El script cruza información entre la base de datos de recepción de facturas (`[CxP].[DocumentsProcessing]`) y las tablas de trazabilidad (`[CxP].[Comparativa_NC]`, `[CxP].[Comparativa_ND]`).
 
----
-
-## 🛠️ Requisitos y Dependencias
-
-### Librerías Python
-El script utiliza las siguientes librerías estándar y de terceros:
-* `pandas` y `numpy`: Manipulación de datos y cálculos.
-* `pyodbc`: Conexión a SQL Server.
-* `openpyxl`: Generación y manipulación de reportes Excel.
-* `datetime`, `dateutil`: Manejo de fechas y plazos.
-* `json`, `ast`: Parsing de configuración.
-
-### Base de Datos (SQL Server)
-El script interactúa con las siguientes tablas:
-1.  **Origen/Destino:** `[CxP].[DocumentsProcessing]` (Tabla principal de documentos).
-2.  **Trazabilidad NC:** `[CxP].[Comparativa_NC]` (Detalle ítem por ítem de las validaciones de NC).
-3.  **Trazabilidad ND:** `[CxP].[Comparativa_ND]` (Detalle ítem por ítem de las validaciones de ND).
-
-> **Nota:** El script crea automáticamente las tablas comparativas si no existen, o las limpia (`TRUNCATE`) al inicio de cada ejecución.
+**Autor:** Diego Ivan Lopez Ochoa
 
 ---
-
-## ⚙️ Configuración (Entrada)
-
-El script espera recibir una variable de Rocketbot llamada `vLocDicConfig` con un JSON o Diccionario que contenga:
-
-```json
-{
-  "ServidorBaseDatos": "IP_O_HOSTNAME",
-  "NombreBaseDatos": "NOMBRE_BD",
-  "UsuarioBaseDatos": "USER",
-  "ClaveBaseDatos": "PASSWORD",
-  "PlazoMaximoRetoma": 120,
-  "RutaBaseReporteNC": "\\\\172.16.250.222\\BOT_Validacion_FV_NC_ND_CXP",
-  "NombreReporteNC": "Reporte_Novedades_NC"
-}
-```
 
 ## 🚀 Flujo de Ejecución
 
-### **Inicialización y Limpieza**
+1.  **Inicialización:**
+    *   Conecta a la base de datos SQL Server.
+    *   Limpia las tablas de comparativa (`TRUNCATE`).
+    *   Puebla las tablas comparativas con los registros pendientes (Snapshot inicial).
 
-Establece conexión a BD (Soporta Autenticación SQL y Windows/Trusted).
+2.  **Procesamiento de Notas Crédito (NC):**
+    *   **Regla de Retoma:** Verifica que la fecha de retoma no exceda el plazo máximo configurado (ej: 120 días).
+    *   **Validaciones Tributarias:**
+        *   Emisor/Receptor: NIT, Nombre, Tipo de Persona, Dígito de Verificación.
+        *   Receptor esperado: DIANA CORPORACION SAS o DICORP SAS.
+        *   Códigos fiscales: `O-13`, `O-15`, `R-99-PN`, etc.
+    *   **Referencia a Factura:**
+        *   Busca la factura original (`FV`) referenciada por la NC.
+        *   Compara el valor de la NC contra el valor de la factura (Tolerancia 0.01).
+    *   **Tipos de NC:** Manejo especial para Tipo 20 (sin referencia) vs otros tipos.
 
-Ejecuta TRUNCATE en las tablas [CxP].[Comparativa_NC] y [CxP].[Comparativa_ND] para iniciar con un lienzo limpio.
+3.  **Procesamiento de Notas Débito (ND):**
+    *   Aplica validaciones tributarias similares a las NC.
+    *   Actualiza el estado a `EXITOSO` si cumple las reglas básicas.
 
-### **Procesamiento de Notas Crédito (NC)**
+4.  **Reportería:**
+    *   Genera un archivo Excel de "Retorno" con las novedades encontradas para gestión manual.
 
-#### **Carga Inicial:** 
-Lee las NC pendientes y realiza una inserción masiva (Snapshot) en la tabla comparativa con estado "PENDIENTE".
+---
 
-#### **Carga de Facturas:** 
-Carga en memoria las Facturas (FV) de los últimos 2 meses para realizar el cruce.
+## 🛠️ Detalles Técnicos
 
-#### **Regla de Retoma:** 
+### Tablas Involucradas
 
-Verifica si la NC ha superado el PlazoMaximoRetoma (ej. 120 días). Si lo excede, se marca como NO EXITOSO.
+*   `[CxP].[DocumentsProcessing]`: Tabla transaccional principal.
+*   `[CxP].[Comparativa_NC]`: Trazabilidad detallada para Notas Crédito.
+*   `[CxP].[Comparativa_ND]`: Trazabilidad detallada para Notas Débito.
 
-#### **Validaciones de Datos:** 
+### Variables de Entrada (RocketBot)
 
-1. Verifica la existencia y formato de:
-Nombre y NIT del Emisor.
+*   `vLocDicConfig`:
+    *   `PlazoMaximoRetoma`: Días máximos permitidos para procesar una NC antigua.
+    *   `RutaBaseReporteNC`: Ruta para guardar el reporte Excel.
+    *   `NombreReporteNC`: Nombre base del reporte.
 
-2. Receptor (Validación estricta de nombres como 'DIANACORPORACIONSAS' y NIT '860031606').
+### Variables de Salida (RocketBot)
 
-3. Códigos tributarios (TaxLevelCode).
+*   `vLocStrResultadoSP`: `True` / `False`.
+*   `vLocStrResumenSP`: Resumen (ej: "Procesamiento Finalizado. NC: 10, ND: 5").
 
-#### **Lógica de Cruce (Match):**
+### Manejo de Fechas
 
-1. Tipo 20: Si la NC es tipo 20, se valida que existan los campos CUFE/CUDE pero no se exige referencia cruzada.
-
-2. Otros Tipos: Busca la Factura (FV) coincidente por PrefijoYNumero y NIT.
-
-#### **Validación Monetaria: **
-
-Si encuentra la factura, compara el Valor a Pagar con una tolerancia de 0.01.
-
-**Resultado:**
-
-Si cruza y los montos coinciden: ENCONTRADO.
-
-Si no cruza o hay error de datos: CON NOVEDAD.
-
-### **Reporte de Novedades (Excel)**
-Si se encuentran NC con estado CON NOVEDAD:
-
-Busca/Crea la carpeta del mes actual (ej: .../2026/01. Enero/INSUMO DE RETORNO).
-
-Genera o actualiza un archivo Excel agregando las filas con ID, NIT y Número de Documento.
-
-### Procesamiento de Notas Débito (ND)
-Carga Inicial: Snapshot masivo en [CxP].[Comparativa_ND].
-
-#### **Validaciones:**
-
-Aplica las mismas reglas tributarias y de datos maestros que en las NC.
-
-**Resultado:** Si cumple las validaciones de campos, se marca como EXITOSO.
-
-## 📊 Salidas del Proceso
-
-### **Base de Datos:**
-
-Actualización de estados en [CxP].[DocumentsProcessing] (Columnas: ResultadoFinalAntesEventos, ObservacionesFase_4, etc.).
-
-Llenado detallado de tablas Comparativa_NC y Comparativa_ND con el resultado de cada validación (SI/NO por campo).
-
-## **Archivos:**
-
-Reporte Excel en ruta de red (Solo si hay novedades).
-
-## **Variables Rocketbot:**
-
-**vLocStrResultadoSP**: "True" si finalizó, "False" si hubo error crítico.
-
-**vGblStrDetalleError**: Detalle del error (Traceback) en caso de fallo.
-
-## ⚠️ Notas Técnicas Importantes
-
-**Sin Tildes**: El código fuente está estrictamente sanitizado para no contener tildes ni caracteres especiales (ñ) en comentarios, variables o nombres de columnas internas para evitar conflictos de codificación (Unicode/ASCII).
-
-**Decimales**: La normalización de moneda maneja tanto punto (.) como coma (,) como separadores decimales.
-
-**Performance**: Utiliza executemany para inserciones masivas y pandas vectorizado para filtros, optimizando el tiempo de ejecución.
-
-**Autor**: Diego Ivan Lopez Ochoa Fecha: Enero 2026
+El script incluye una función robusta `calcular_dias_diferencia` que soporta múltiples formatos de fecha (`%Y-%m-%d`, `%d/%m/%Y`) para manejar la variabilidad en los datos de entrada.

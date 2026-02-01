@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validar campos reglamentarios de la operación.
+
+LOGICA:
+Aplica reglas de negocio específicas sobre tipos de documento y condiciones operativas.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 async def ejecutar_HU4_E_ReglamentariosOperacion():
     import asyncio
     import pyodbc
