@@ -177,6 +177,7 @@ def buscarCandidatos():
         cur = cx.cursor()
         cur.execute(query, (schema, tabla))
         count = cur.fetchone()[0]
+        cx.commit()
         cur.close()
         return count > 0
     
@@ -368,6 +369,7 @@ def buscarCandidatos():
                     else:
                         safe_row.append(val)
                 data.append(safe_row)
+            cx.commit()
             cur.close()
             return pd.DataFrame(data, columns=columns)
     
@@ -733,7 +735,8 @@ def ZPRE_ValidarCOP():
                 """
                 params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
                 cur.execute(update_query, params)
-        
+                
+        cx.commit()
         cur.close()
     
     def safe_str(v):
@@ -1206,6 +1209,7 @@ def ZPRE_ValidarCOP():
                           AND Factura = ?
                         """
                         cur.execute(update_estado_todos, (estado_final, nit, factura))
+                        cx.commit()
                         cur.close()
                         
                         print("[DEBUG] CxP.Comparativa actualizado OK")
@@ -1240,7 +1244,7 @@ def ZPRE_ValidarCOP():
                                 num_actualizados += 1
                         
                         print("[DEBUG] HistoricoOrdenesCompra actualizado: " + str(num_actualizados) + " registros")
-                        
+                        cx.commit()
                         cur.close()
                         print("[UPDATE] Todas las tablas actualizadas OK")
                         
@@ -1395,7 +1399,7 @@ def ZPRE_ValidarUSD():
                 """
                 params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
                 cur.execute(update_query, params)
-        
+        cx.commit()
         cur.close()
     
     def safe_str(v):
@@ -1641,6 +1645,7 @@ def ZPRE_ValidarUSD():
                         UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
                         WHERE NIT = ? AND Factura = ?
                         """, (estado_final, nit, factura))
+                        cx.commit()
                         cur.close()
                 
                 except Exception as e_row:
@@ -1870,6 +1875,7 @@ def ZPRE_ValidarTRM():
                         UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
                         WHERE NIT = ? AND Factura = ?
                         """, (estado_final, nit, factura))
+                        cx.commit()
                         cur.close()
                 
                 except Exception as e:
@@ -2058,6 +2064,7 @@ def ZPRE_ValidarCantidadPrecio():
                         cur.execute("""UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
                         WHERE NIT = ? AND Factura = ?
                         """, (estado, nit, factura))
+                        cx.commit()
                         cur.close()
                 except: pass
             
@@ -2242,6 +2249,7 @@ def ZPRE_ValidarEmisor():
                         cur.execute("""UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
                         WHERE NIT = ? AND Factura = ?
                         """, (estado, nit, factura))
+                        cx.commit()
                         cur.close()
                 except: pass
             
@@ -2416,6 +2424,7 @@ def ZPCN_ZPPA_ValidarCOP():
         
         if count > 0:
             print("[DEBUG] Item '" + item_name + "' ya existe")
+            cx.commit()
             cur.close()
             return True
         
@@ -2433,6 +2442,7 @@ def ZPCN_ZPPA_ValidarCOP():
         
         if not result or not result[0]:
             print("[ERROR] No se encontro registro base")
+            cx.commit()
             cur.close()
             return False
         
@@ -2466,7 +2476,7 @@ def ZPCN_ZPPA_ValidarCOP():
         """
         cur.execute(insert_query, (item_name, nit, factura, min_id))
         print("[DEBUG] Item '" + item_name + "' creado exitosamente")
-        
+        cx.commit()
         cur.close()
         return True
     
@@ -2689,7 +2699,7 @@ def ZPCN_ZPPA_ValidarCOP():
                                   AND TextoBreve = ?
                                 """
                                 cur.execute(update_marca, (doccompra_val, nitcedula_val, porcalcular_val, textobreve_val))
-                        
+                        cx.commit()
                         cur.close()
                     else:
                         stats['aprobados'] += 1
@@ -2897,6 +2907,7 @@ def ZPCN_ZPPA_ValidarUSD():
                         cur.execute("""UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
                         WHERE NIT = ? AND Factura = ?
                         """, (estado, nit, factura))
+                        cx.commit()
                         cur.close()
                 except: pass
             
@@ -3295,7 +3306,7 @@ def ZPCN_ZPPA_ValidarTRM():
                                 num_actualizados += 1
                         
                         print("[DEBUG] HistoricoOrdenesCompra actualizado: " + str(num_actualizados) + " registros")
-                        
+                        cx.commit()
                         cur.close()
                         print("[UPDATE] Todas las tablas actualizadas OK (TRM)")
                         
@@ -3832,7 +3843,7 @@ def ZPCN_ZPPA_ValidarEmisor():
                           AND Item = 'NombreEmisor'
                         """
                         cur.execute(update_voc, (primer_acreedor, nit, factura))
-                        
+                        cx.commit()
                         cur.close()
                         print("[UPDATE] Tabla CxP.Comparativa actualizada OK (APROBADO)")
                         
@@ -4019,7 +4030,7 @@ def ZPCN_ZPPA_ValidarEmisor():
                                 num_actualizados += 1
                         
                         print("[DEBUG] HistoricoOrdenesCompra actualizado: " + str(num_actualizados) + " registros")
-                        
+                        cx.commit()
                         cur.close()
                         print("[UPDATE] Todas las tablas actualizadas OK (CON NOVEDAD)")
                     
@@ -4225,6 +4236,7 @@ def ZPCN_ZPPA_ValidarOrdenRegistro():
         
         if count > 0:
             print("[DEBUG] Item '" + item_name + "' ya existe")
+            cx.commit()
             cur.close()
             return True
         
@@ -4242,6 +4254,7 @@ def ZPCN_ZPPA_ValidarOrdenRegistro():
         
         if not result or not result[0]:
             print("[ERROR] No se encontro registro base")
+            cx.commit()
             cur.close()
             return False
         
@@ -4275,7 +4288,7 @@ def ZPCN_ZPPA_ValidarOrdenRegistro():
         """
         cur.execute(insert_query, (item_name, nit, factura, min_id))
         print("[DEBUG] Item '" + item_name + "' creado exitosamente")
-        
+        cx.commit()
         cur.close()
         return True
     
@@ -4336,7 +4349,7 @@ def ZPCN_ZPPA_ValidarOrdenRegistro():
             """
             cur.execute(update_estado, (estado, nit, factura))
             print("[UPDATE] Estado_validacion_antes_de_eventos = " + estado)
-        
+        cx.commit()
         cur.close()
     
     def actualizar_documents_processing(cx, nit, factura, oc, observacion, forma_pago):
@@ -4399,7 +4412,7 @@ def ZPCN_ZPPA_ValidarOrdenRegistro():
           AND numero_de_liquidacion_u_orden_de_compra = ?
         """
         cur.execute(update_resultado, (estado_final, nit, factura, oc))
-        
+        cx.commit()
         cur.close()
         print("[UPDATE] DocumentsProcessing actualizado (CON NOVEDAD)")
     
@@ -4427,7 +4440,7 @@ def ZPCN_ZPPA_ValidarOrdenRegistro():
                 """
                 cur.execute(update_marca, (doccompra, nitcedula, porcalcular, textobreve))
                 num_actualizados += 1
-        
+        cx.commit()
         cur.close()
         print("[UPDATE] HistoricoOrdenesCompra: " + str(num_actualizados) + " registros marcados como PROCESADO")
     
@@ -4923,6 +4936,7 @@ def ZPCN_ZPPA_ValidarElementoPEP():
         
         if count > 0:
             print("[DEBUG] Item '" + item_name + "' ya existe")
+            cx.commit()
             cur.close()
             return True
         
@@ -4940,6 +4954,7 @@ def ZPCN_ZPPA_ValidarElementoPEP():
         
         if not result or not result[0]:
             print("[ERROR] No se encontro registro base")
+            cx.commit()
             cur.close()
             return False
         
@@ -4973,7 +4988,7 @@ def ZPCN_ZPPA_ValidarElementoPEP():
         """
         cur.execute(insert_query, (item_name, nit, factura, min_id))
         print("[DEBUG] Item '" + item_name + "' creado exitosamente")
-        
+        cx.commit()
         cur.close()
         return True
     
@@ -5032,7 +5047,7 @@ def ZPCN_ZPPA_ValidarElementoPEP():
             """
             cur.execute(update_estado, (estado, nit, factura))
             print("[UPDATE] Estado_validacion_antes_de_eventos = " + estado)
-        
+        cx.commit()
         cur.close()
     
     def actualizar_documents_processing(cx, nit, factura, oc, observacion, forma_pago):
@@ -5089,7 +5104,7 @@ def ZPCN_ZPPA_ValidarElementoPEP():
           AND numero_de_liquidacion_u_orden_de_compra = ?
         """
         cur.execute(update_resultado, (estado_final, nit, factura, oc))
-        
+        cx.commit()
         cur.close()
         print("[UPDATE] DocumentsProcessing actualizado (CON NOVEDAD)")
     
@@ -5116,7 +5131,7 @@ def ZPCN_ZPPA_ValidarElementoPEP():
                 """
                 cur.execute(update_marca, (doccompra, nitcedula, porcalcular, textobreve))
                 num_actualizados += 1
-        
+        cx.commit()
         cur.close()
         print("[UPDATE] HistoricoOrdenesCompra: " + str(num_actualizados) + " registros marcados como PROCESADO")
     
@@ -5559,6 +5574,7 @@ def ZPCN_ZPPA_ValidarActivoFijo():
         
         if count > 0:
             print("[DEBUG] Item '" + item_name + "' ya existe")
+            cx.commit()
             cur.close()
             return True
         
@@ -5576,6 +5592,7 @@ def ZPCN_ZPPA_ValidarActivoFijo():
         
         if not result or not result[0]:
             print("[ERROR] No se encontro registro base")
+            cx.commit()
             cur.close()
             return False
         
@@ -5609,7 +5626,7 @@ def ZPCN_ZPPA_ValidarActivoFijo():
         """
         cur.execute(insert_query, (item_name, nit, factura, min_id))
         print("[DEBUG] Item '" + item_name + "' creado exitosamente")
-        
+        cx.commit()
         cur.close()
         return True
     
@@ -5668,7 +5685,7 @@ def ZPCN_ZPPA_ValidarActivoFijo():
             """
             cur.execute(update_estado, (estado, nit, factura))
             print("[UPDATE] Estado_validacion_antes_de_eventos = " + estado)
-        
+        cx.commit()
         cur.close()
     
     def actualizar_documents_processing(cx, nit, factura, oc, observacion, forma_pago):
@@ -5730,7 +5747,7 @@ def ZPCN_ZPPA_ValidarActivoFijo():
           AND numero_de_liquidacion_u_orden_de_compra = ?
         """
         cur.execute(update_resultado, (estado_final, nit, factura, oc))
-        
+        cx.commit()
         cur.close()
         print("[UPDATE] DocumentsProcessing actualizado (CON NOVEDAD)")
     
@@ -5758,7 +5775,7 @@ def ZPCN_ZPPA_ValidarActivoFijo():
                 """
                 cur.execute(update_marca, (doccompra, nitcedula, porcalcular, textobreve))
                 num_actualizados += 1
-        
+        cx.commit()
         cur.close()
         print("[UPDATE] HistoricoOrdenesCompra: " + str(num_actualizados) + " registros marcados como PROCESADO")
     
@@ -6634,7 +6651,7 @@ def PostProcesamiento_EstadosFinales():
                             """
                             cur.execute(update_comparativa, (nuevo_resultado, nit, factura))
                             print("[UPDATE] Comparativa actualizada (ESTADO)")
-                            
+                            cx.commit()
                             cur.close()
                         
                         else:
@@ -6685,7 +6702,7 @@ def PostProcesamiento_EstadosFinales():
                             """
                             cur.execute(update_comparativa, (nuevo_resultado, nit, factura))
                             print("[UPDATE] Comparativa actualizada (ESTADO)")
-                            
+                            cx.commit()
                             cur.close()
                         
                         # SUBCASO 2.2: ClaseDeImpuesto NO contiene 31
@@ -6759,6 +6776,7 @@ def PostProcesamiento_EstadosFinales():
                                         num_actualizados += 1
                                 
                                 print("[UPDATE] HistoricoOrdenesCompra: " + str(num_actualizados) + " registros actualizados")
+                                cx.commit()
                                 cur.close()
                             
                             # SUBCASO 2.2.2: forma_de_pago != "1" ni "01"
@@ -6820,6 +6838,7 @@ def PostProcesamiento_EstadosFinales():
                                         num_actualizados += 1
                                 
                                 print("[UPDATE] HistoricoOrdenesCompra: " + str(num_actualizados) + " registros actualizados")
+                                cx.commit()
                                 cur.close()
                 
                 except Exception as e_row:
@@ -7486,6 +7505,7 @@ def ActualizarHistoricoNovedades():
         cur = cx.cursor()
         cur.execute(query)
         count = cur.fetchone()[0]
+        cx.commit()
         cur.close()
         return count > 0
     
@@ -7531,6 +7551,7 @@ def ActualizarHistoricoNovedades():
         cur = cx.cursor()
         cur.execute(query, (nit, factura))
         row = cur.fetchone()
+        cx.commit()
         cur.close()
         
         if row:
@@ -7708,7 +7729,7 @@ def ActualizarHistoricoNovedades():
                                 fec_reg,
                                 observaciones
                             ))
-                            
+                            cx.commit()
                             cur.close()
                             stats['nuevos_insertados'] += 1
                             print("[INSERT] Nuevo registro insertado")
@@ -7740,7 +7761,7 @@ def ActualizarHistoricoNovedades():
                                 nit,
                                 factura
                             ))
-                            
+                            cx.commit()
                             cur.close()
                             stats['actualizados'] += 1
                             print("[UPDATE] Registro actualizado")
@@ -7838,7 +7859,7 @@ def ActualizarHistoricoNovedades():
                                 nit_hist,
                                 factura_hist
                             ))
-                            
+                            cx.commit()
                             cur.close()
                             stats['actualizados_no_encontrado'] += 1
                             print("[UPDATE] Fechas actualizadas")

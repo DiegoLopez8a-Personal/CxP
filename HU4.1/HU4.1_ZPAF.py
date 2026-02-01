@@ -1,45 +1,121 @@
 def ZPAF_ValidarActivosFijos():
     """
-    Función para procesar las validaciones de ZPAF/41 (Pedidos Activos Fijos).
-    
-    VERSIÓN: 1.0 - 12 Enero 2026
-    
-    FLUJO PRINCIPAL:
-        1. Lee registros de [CxP].[Trans_Candidatos_HU41] con ClaseDePedido_hoc IN ('ZPAF', '41')
-        2. Para cada registro:
-           a. Determina si es USD o no (campo Moneda_hoc)
-           b. Si USD: compara VlrPagarCop vs PorCalcular_hoc
-           c. Si NO USD: compara Valor de la Compra LEA vs PorCalcular_hoc
-           d. Valida TRM
-           e. Valida Nombre Emisor
-           f. Valida Activo fijo (9 dígitos)
-           g. Valida Capitalizado el (NUNCA diligenciado)
-           h. Valida Indicador impuestos (H4/H5/VP o H6/H7/VP sin mezclar)
-           i. Valida Criterio clasif. 2 (según indicador)
-           j. Valida Cuenta (debe ser 2695950020)
-        3. Actualiza [CxP].[DocumentsProcessing] con estados y observaciones
-        4. Genera trazabilidad en [dbo].[CxP.Comparativa]
-    
-    NOTA IMPORTANTE SOBRE PaymentMeans:
-        - Si PaymentMeans = '01', se agrega ' CONTADO' al resultado final
-        - Ejemplo: 'CON NOVEDAD CONTADO'
-    
-    ESTRUCTURA DE DATOS:
-        - Campos _dp: datos del XML (DocumentsProcessing)
-        - Campos _hoc: datos del histórico de órdenes de compra
-        - Campos _ddp: datos del detalle de documento
-        - DocumentsProcessing NO tiene sufijos (nombres base)
-    
+    Orquesta la validacion de pedidos de Activos Fijos (Clases ZPAF o 41).
+
+    Esta funcion principal implementa el flujo completo de validacion para pedidos
+    de activos fijos en el sistema de Cuentas por Pagar (CxP). Se conecta a la 
+    base de datos, recupera los registros pendientes y ejecuta una bateria de 
+    validaciones financieras y de datos maestros especificas para este tipo de pedido.
+
+    El proceso de validacion incluye las siguientes etapas:
+
+        1. **Carga de configuracion**: Obtiene parametros desde RocketBot mediante
+           la variable ``vLocDicConfig``.
+        
+        2. **Conexion a base de datos**: Establece conexion resiliente con SQL Server
+           utilizando multiples metodos de autenticacion.
+        
+        3. **Consulta de candidatos**: Recupera registros ZPAF/41 pendientes desde
+           la vista ``[CxP].[HU41_CandidatosValidacion]``.
+        
+        4. **Validaciones por registro**: Para cada registro candidato ejecuta:
+           
+           - **Validacion de montos**: Compara valor a pagar XML vs suma de posiciones SAP.
+           - **Validacion de TRM**: Verifica tasa de cambio para operaciones USD.
+           - **Validacion de nombre emisor**: Compara proveedor XML vs SAP.
+           - **Validacion de Activo Fijo**: Verifica formato de 9 digitos.
+           - **Validacion de Capitalizado**: Campo debe estar vacio para ZPAF.
+           - **Validacion de Indicador Impuestos**: H4/H5 (Productores) o H6/H7 (No productores).
+           - **Validacion de Criterio Clasif. 2**: Coherencia con indicador de impuestos.
+           - **Validacion de Cuenta**: Debe ser 2695950020 para ZPAF.
+        
+        5. **Actualizacion de resultados**: Registra el estado final en las tablas
+           transaccional y de trazabilidad.
+
+    Tablas involucradas:
+        - **[CxP].[HU41_CandidatosValidacion]** (Vista): Fuente de registros candidatos.
+        - **[CxP].[DocumentsProcessing]** (Tabla): Almacena estado y observaciones.
+        - **[dbo].[CxP.Comparativa]** (Tabla): Trazabilidad detallada de validaciones.
+        - **[CxP].[HistoricoOrdenesCompra]** (Tabla): Marca de ordenes procesadas.
+
+    Reglas de negocio ZPAF:
+        - **Activo Fijo**: Debe tener exactamente 9 digitos numericos.
+        - **Capitalizado el**: NUNCA debe estar diligenciado (siempre vacio).
+        - **Indicador Impuestos**: 
+            - Grupo 1 (Productores): H4, H5, VP
+            - Grupo 2 (No Productores): H6, H7, VP
+            - No se permite mezclar indicadores de ambos grupos.
+        - **Criterio Clasif. 2**:
+            - H4/H5 → debe ser '0001'
+            - H6/H7 → debe ser '0000'
+            - VP → puede ser '0001' o '0000'
+        - **Cuenta**: Debe ser estrictamente '2695950020'.
+
+    Variables de entrada (RocketBot):
+        - ``vLocDicConfig`` (str | dict): Configuracion JSON con parametros de conexion:
+            - ServidorBaseDatos (str): Hostname o IP del servidor SQL Server.
+            - NombreBaseDatos (str): Nombre de la base de datos.
+            - UsuarioBaseDatos (str): Usuario para autenticacion SQL.
+            - ClaveBaseDatos (str): Contrasena del usuario SQL.
+
+    Variables de salida (RocketBot):
+        - ``vLocStrResultadoSP`` (str): "True" si finalizo correctamente, "False" si hubo error critico.
+        - ``vLocStrResumenSP`` (str): Resumen estadistico del procesamiento.
+        - ``vGblStrDetalleError`` (str): Traceback completo en caso de excepcion critica.
+        - ``vGblStrSystemError`` (str): Identificador del error del sistema.
+
+    Estados finales posibles por registro:
+        - ``PROCESADO``: Validacion exitosa sin novedades.
+        - ``PROCESADO CONTADO``: Validacion exitosa, forma de pago contado.
+        - ``CON NOVEDAD``: Se encontraron discrepancias en alguna validacion.
+        - ``CON NOVEDAD CONTADO``: Discrepancias con forma de pago contado.
+
     Returns:
-        None: Actualiza variables globales en RocketBot
-            - vLocStrResultadoSP: 'True' si exitoso, 'False' si error
-            - vLocStrResumenSP: Resumen del procesamiento
-            - vGblStrDetalleError: Detalle del error (si aplica)
-            - vGblStrSystemError: Traceback completo (si aplica)
+        None: La funcion no retorna valores directamente. Los resultados se 
+            comunican a traves de las variables de RocketBot especificadas.
+
+    Raises:
+        ValueError: Si faltan parametros obligatorios en la configuracion o
+            si la configuracion tiene formato invalido.
+        pyodbc.Error: Si hay errores de conexion a la base de datos despues
+            de agotar todos los reintentos.
+        Exception: Cualquier error critico no manejado que detenga el proceso.
+
+    Note:
+        - Los errores individuales por registro NO detienen el procesamiento;
+          se registra la novedad y continua con el siguiente registro.
+        - Solo los errores criticos de infraestructura detienen completamente el bot.
+        - La tolerancia para comparacion de montos es de $500 COP.
+        - La tolerancia para comparacion de TRM es de 0.01.
+
+    Example:
+        Configuracion tipica en RocketBot::
+
+            # Configurar variables previas
+            SetVar("vLocDicConfig", json.dumps({
+                "ServidorBaseDatos": "sqlserver.empresa.com",
+                "NombreBaseDatos": "CxP_Produccion",
+                "UsuarioBaseDatos": "app_user",
+                "ClaveBaseDatos": "SecurePass123"
+            }))
+            
+            # Ejecutar la validacion
+            ZPAF_ValidarActivosFijos()
+            
+            # Verificar resultado
+            resultado = GetVar("vLocStrResultadoSP")  # "True" o "False"
+            resumen = GetVar("vLocStrResumenSP")
+            # "Procesados 15 registros ZPAF/41. Exitosos: 12, Con novedad: 3"
+
+    Version:
+        1.0
+
+    Author:
+        Equipo de Desarrollo RPA
     """
     
     # =========================================================================
-    # IMPORTS - Todas las librerías dentro de la función
+    # SECCION 1: IMPORTACION DE LIBRERIAS
     # =========================================================================
     import json
     import ast
@@ -52,23 +128,53 @@ def ZPAF_ValidarActivosFijos():
     import time
     import warnings
     import re
-    from itertools import combinations
+    from itertools import combinations, zip_longest
     
+    # Ignorar advertencias de compatibilidad de Pandas con ODBC
+    # Estas advertencias no afectan la funcionalidad cuando se usa pyodbc directamente
     warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy')
     
     # =========================================================================
-    # FUNCIONES AUXILIARES BÁSICAS
+    # SECCION 2: FUNCIONES AUXILIARES (HELPERS)
     # =========================================================================
     
     def safe_str(v):
         """
-        Convierte un valor a string de manera segura.
-        
+        Convierte cualquier tipo de entrada a una cadena de texto limpia y segura.
+
+        Esta funcion es fundamental para el manejo seguro de datos provenientes
+        de multiples fuentes (base de datos, XML, Excel) que pueden contener
+        valores nulos, tipos inesperados o codificaciones diversas.
+
         Args:
-            v: Valor a convertir (cualquier tipo)
-            
+            v (Any): El valor a convertir. Tipos soportados:
+                - None: Retorna cadena vacia.
+                - str: Retorna el string sin espacios extremos.
+                - bytes: Decodifica usando latin-1 con manejo de errores.
+                - int/float: Convierte a string, manejando NaN como vacio.
+                - Otros: Intenta conversion estandar a string.
+
         Returns:
-            str: Valor convertido a string, vacío si es None o NaN
+            str: La representacion en cadena del valor, sin espacios al inicio/final.
+                Siempre retorna un string valido (nunca None).
+                Los valores NaN/NA de pandas retornan cadena vacia.
+
+        Examples:
+            >>> safe_str(None)
+            ''
+            >>> safe_str("  Texto con espacios  ")
+            'Texto con espacios'
+            >>> safe_str(12345)
+            '12345'
+            >>> safe_str(float('nan'))
+            ''
+            >>> safe_str(b'datos en bytes')
+            'datos en bytes'
+
+        Note:
+            La funcion nunca lanza excepciones; cualquier error de conversion
+            resulta en una cadena vacia como fallback seguro. Esto garantiza
+            que el flujo de procesamiento no se interrumpa por datos malformados.
         """
         if v is None:
             return ""
@@ -80,6 +186,7 @@ def ZPAF_ValidarActivosFijos():
             except:
                 return str(v).strip()
         if isinstance(v, (int, float)):
+            # Verifica si es NaN (Not a Number)
             if isinstance(v, float) and (np.isnan(v) or pd.isna(v)):
                 return ""
             return str(v)
@@ -90,14 +197,37 @@ def ZPAF_ValidarActivosFijos():
     
     def truncar_observacion(obs, max_len=3900):
         """
-        Trunca observación para prevenir overflow en BD.
-        
+        Trunca una cadena de texto para evitar errores de desbordamiento en SQL Server.
+
+        Los campos de observaciones en SQL Server tipicamente tienen limites de
+        longitud (NVARCHAR(4000)). Esta funcion garantiza que los textos largos
+        no causen errores de insercion, preservando la informacion mas relevante
+        al inicio del texto.
+
         Args:
-            obs: Observación a truncar
-            max_len: Longitud máxima permitida
-            
+            obs (str | Any): El texto de la observacion a guardar. Si no es string,
+                se convierte usando ``safe_str()``.
+            max_len (int, optional): La longitud maxima permitida. Por defecto es 3900,
+                dejando margen de seguridad respecto al limite tipico de 4000.
+
         Returns:
-            str: Observación truncada si excede max_len
+            str: El texto truncado con "..." al final si excedia la longitud,
+                o el texto original si era menor al limite.
+                Retorna cadena vacia si la entrada es None o vacia.
+
+        Examples:
+            >>> truncar_observacion("Texto corto")
+            'Texto corto'
+            >>> truncar_observacion("A" * 5000, max_len=100)
+            'AAAA...AAA...'  # 97 caracteres + "..."
+            >>> truncar_observacion(None)
+            ''
+
+        Note:
+            El valor predeterminado de 3900 permite espacio adicional para:
+            - Concatenaciones posteriores con observaciones existentes.
+            - Caracteres especiales que puedan expandirse en la codificacion.
+            - Prefijos o sufijos que se anadan durante el procesamiento.
         """
         if not obs:
             return ""
@@ -108,16 +238,47 @@ def ZPAF_ValidarActivosFijos():
     
     def parse_config(raw):
         """
-        Parsea la configuración desde RocketBot.
-        
+        Analiza y convierte la configuracion de entrada a un diccionario Python.
+
+        Esta funcion maneja multiples formatos de entrada que pueden provenir
+        de RocketBot, incluyendo diccionarios Python directos, strings JSON,
+        y representaciones literales de Python.
+
         Args:
-            raw: Configuración en formato dict, JSON string o literal Python
-            
+            raw (str | dict): La configuracion cruda proveniente de la variable
+                de RocketBot ``vLocDicConfig``. Formatos aceptados:
+                - dict: Se valida que no este vacio y se retorna directamente.
+                - str (JSON): Se parsea con ``json.loads()``.
+                - str (Python literal): Se parsea con ``ast.literal_eval()``.
+
         Returns:
-            dict: Configuración parseada
-            
+            dict: Un diccionario con las claves de configuracion.
+                Claves tipicas esperadas:
+                - ServidorBaseDatos (str): Hostname o IP del servidor.
+                - NombreBaseDatos (str): Nombre de la base de datos.
+                - UsuarioBaseDatos (str): Usuario para autenticacion.
+                - ClaveBaseDatos (str): Contrasena del usuario.
+
         Raises:
-            ValueError: Si la configuración está vacía o es inválida
+            ValueError: Si la configuracion esta vacia, tiene formato invalido,
+                o no puede ser parseada por ninguno de los metodos disponibles.
+
+        Examples:
+            >>> parse_config({"servidor": "localhost"})
+            {'servidor': 'localhost'}
+            >>> parse_config('{"servidor": "localhost", "puerto": 1433}')
+            {'servidor': 'localhost', 'puerto': 1433}
+            >>> parse_config("{'clave': 'valor'}")  # Literal Python
+            {'clave': 'valor'}
+            >>> parse_config("")
+            Raises ValueError: vLocDicConfig vacio
+
+        Note:
+            El orden de intentos de parseo es:
+            1. Verificar si ya es diccionario (y no esta vacio).
+            2. Intentar JSON (json.loads).
+            3. Intentar literal Python (ast.literal_eval).
+            4. Lanzar ValueError si todos fallan.
         """
         if isinstance(raw, dict):
             if not raw:
@@ -143,13 +304,51 @@ def ZPAF_ValidarActivosFijos():
     
     def normalizar_decimal(valor):
         """
-        Normaliza valores decimales con punto o coma.
-        
+        Normaliza una entrada numerica o de texto a un valor flotante estandar.
+
+        Esta funcion maneja multiples formatos numericos que pueden provenir de
+        diferentes fuentes (Excel con formato europeo, SAP, XML) y los convierte
+        a un float estandar de Python para comparaciones matematicas.
+
         Args:
-            valor: Valor numérico (puede ser string con coma/punto)
-            
+            valor (str | float | int | None): El valor a normalizar. Formatos soportados:
+                - None, '', pd.NA, np.nan: Retorna 0.0
+                - int: Convierte directamente a float
+                - float: Retorna el valor (0.0 si es NaN)
+                - str con coma decimal (1.000,50): Convierte a 1000.50
+                - str con punto decimal (1000.50): Convierte normalmente
+                - str con simbolos ($, COP, etc.): Elimina y convierte
+
         Returns:
-            float: Valor normalizado, 0.0 si es inválido
+            float: El valor numerico normalizado.
+                Siempre retorna un float valido (nunca None o NaN).
+                Valores no parseables retornan 0.0.
+
+        Examples:
+            >>> normalizar_decimal("1.234,56")  # Formato europeo
+            1234.56
+            >>> normalizar_decimal("$1,000.00")  # Con simbolo
+            1000.0
+            >>> normalizar_decimal(None)
+            0.0
+            >>> normalizar_decimal("")
+            0.0
+            >>> normalizar_decimal(12345)
+            12345.0
+            >>> normalizar_decimal("  -123.45  ")
+            -123.45
+
+        Note:
+            El procesamiento para strings es:
+            1. Eliminar espacios extremos.
+            2. Reemplazar comas por puntos (estandarizacion).
+            3. Eliminar caracteres no numericos (excepto punto y signo negativo).
+            4. Convertir a float.
+
+        Warning:
+            Para valores con multiples puntos despues del reemplazo de comas,
+            el resultado puede ser inesperado. Se recomienda preprocesar
+            estos casos externamente si son comunes en los datos de origen.
         """
         if pd.isna(valor) or valor == '' or valor is None:
             return 0.0
@@ -157,10 +356,11 @@ def ZPAF_ValidarActivosFijos():
             if np.isnan(valor) if isinstance(valor, float) else False:
                 return 0.0
             return float(valor)
+        
         valor_str = str(valor).strip()
-        # Reemplazar coma por punto para decimales
+        # Estandarizacion: Reemplazar coma por punto para compatibilidad con float() de Python
         valor_str = valor_str.replace(',', '.')
-        # Eliminar espacios y caracteres no numéricos excepto punto y signo
+        # Regex: Eliminar todo lo que no sea digito, punto o signo negativo
         valor_str = re.sub(r'[^\d.\-]', '', valor_str)
         try:
             return float(valor_str)
@@ -168,24 +368,80 @@ def ZPAF_ValidarActivosFijos():
             return 0.0
     
     # =========================================================================
-    # FUNCIONES DE CONEXIÓN A BASE DE DATOS
+    # SECCION 3: GESTION DE BASE DE DATOS
     # =========================================================================
     
     @contextmanager
     def crear_conexion_db(cfg, max_retries=3):
         """
-        Crea conexión a la base de datos con reintentos y manejo de transacciones.
-        
+        Context Manager para establecer una conexion segura y resiliente a SQL Server.
+
+        Implementa una estrategia de reintentos (Retries) y prueba dos metodos
+        de autenticacion secuencialmente, garantizando maxima compatibilidad
+        con diferentes configuraciones de servidor.
+
         Args:
-            cfg: Diccionario de configuración con ServidorBaseDatos y NombreBaseDatos
-            max_retries: Número máximo de reintentos
-            
+            cfg (dict): Diccionario con credenciales y parametros de conexion.
+                Claves requeridas:
+                    - ServidorBaseDatos (str): Hostname o IP del servidor SQL.
+                    - NombreBaseDatos (str): Nombre de la base de datos.
+                Claves opcionales:
+                    - UsuarioBaseDatos (str): Usuario para autenticacion SQL.
+                    - ClaveBaseDatos (str): Contrasena del usuario SQL.
+            max_retries (int, optional): Numero maximo de intentos por cada
+                metodo de autenticacion. Por defecto 3.
+
         Yields:
-            pyodbc.Connection: Conexión a la base de datos
-            
+            pyodbc.Connection: Objeto de conexion activo con autocommit deshabilitado.
+                - Se hace commit automatico al salir del contexto sin errores.
+                - Se hace rollback automatico si ocurre una excepcion.
+
         Raises:
-            ValueError: Si faltan parámetros de configuración
-            pyodbc.Error: Si falla la conexión después de todos los reintentos
+            ValueError: Si faltan parametros obligatorios (ServidorBaseDatos,
+                NombreBaseDatos) en el diccionario de configuracion.
+            pyodbc.Error: Si no se logra conectar tras agotar todos los intentos
+                con ambos metodos de autenticacion.
+            Exception: Cualquier error que ocurra durante operaciones de BD.
+
+        Examples:
+            Uso basico con autenticacion SQL::
+
+                cfg = {
+                    "ServidorBaseDatos": "sqlserver.empresa.com",
+                    "NombreBaseDatos": "CxP_Produccion",
+                    "UsuarioBaseDatos": "app_user",
+                    "ClaveBaseDatos": "SecurePass123"
+                }
+                with crear_conexion_db(cfg) as conexion:
+                    cursor = conexion.cursor()
+                    cursor.execute("SELECT * FROM Tabla")
+                    resultados = cursor.fetchall()
+                # Commit automatico al salir del bloque 'with'
+
+            Manejo de errores con rollback automatico::
+
+                try:
+                    with crear_conexion_db(cfg) as conexion:
+                        cursor = conexion.cursor()
+                        cursor.execute("INSERT INTO Tabla VALUES (...)")
+                        raise ValueError("Error intencional")
+                except ValueError:
+                    # El rollback ya se ejecuto automaticamente
+                    print("Transaccion revertida")
+
+        Note:
+            Estrategia de conexion:
+            
+            1. **Fase 1**: Intenta autenticacion SQL (UID/PWD) hasta max_retries veces.
+            2. **Fase 2**: Si Fase 1 falla, intenta Trusted Connection (Windows Auth).
+            3. Hay una pausa de 1 segundo entre reintentos fallidos.
+            4. Usa ODBC Driver 17 for SQL Server.
+            5. Timeout de conexion: 30 segundos.
+
+        Warning:
+            - La conexion debe usarse dentro de un bloque ``with``.
+            - No reutilizar el objeto de conexion fuera del contexto.
+            - El commit/rollback se maneja automaticamente.
         """
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
@@ -195,10 +451,7 @@ def ZPAF_ValidarActivosFijos():
         usuario = cfg['UsuarioBaseDatos']
         contrasena = cfg['ClaveBaseDatos']
         
-        # Estrategia de conexion:
-        # 1. Intentar con Usuario y Contraseña (para Produccion)
-        # 2. Si falla, intentar con Trusted Connection (para Desarrollo/Windows Auth)
-
+        # Cadenas de conexion para los dos metodos soportados
         conn_str_auth = (
             "DRIVER={ODBC Driver 17 for SQL Server};"
             f"SERVER={cfg['ServidorBaseDatos']};"
@@ -220,34 +473,27 @@ def ZPAF_ValidarActivosFijos():
         conectado = False
         excepcion_final = None
 
-        # Intento 1: Autenticacion SQL
-        ########################
-        print("[DEBUG] Intentando conexion con Usuario/Contraseña...")
+        # Fase 1: Intentar Autenticacion SQL
         for attempt in range(max_retries):
             try:
                 cx = pyodbc.connect(conn_str_auth, timeout=30)
                 cx.autocommit = False
                 conectado = True
-                print(f"[DEBUG] Conexion SQL (Auth) abierta exitosamente (intento {attempt + 1})")
                 break
             except pyodbc.Error as e:
-                print(f"[WARNING] Fallo conexion con Usuario/Contraseña (intento {attempt + 1}): {str(e)}")
                 excepcion_final = e
                 if attempt < max_retries - 1:
                     time.sleep(1)
 
-        # Intento 2: Trusted Connection (si fallo el anterior)
+        # Fase 2: Intentar Trusted Connection (solo si fallo la anterior)
         if not conectado:
-            print("[DEBUG] Intentando conexion Trusted Connection (Windows Auth)...")
             for attempt in range(max_retries):
                 try:
                     cx = pyodbc.connect(conn_str_trusted, timeout=30)
                     cx.autocommit = False
                     conectado = True
-                    print(f"[DEBUG] Conexion SQL (Trusted) abierta exitosamente (intento {attempt + 1})")
                     break
                 except pyodbc.Error as e:
-                    print(f"[WARNING] Fallo conexion Trusted Connection (intento {attempt + 1}): {str(e)}")
                     excepcion_final = e
                     if attempt < max_retries - 1:
                         time.sleep(1)
@@ -258,54 +504,74 @@ def ZPAF_ValidarActivosFijos():
         try:
             yield cx
             if cx:
-                cx.commit()
-                print("[DEBUG] Commit final exitoso")
+                cx.commit()  # Commit final si todo salio bien
         except Exception as e:
             if cx:
-                cx.rollback()
+                cx.rollback()  # Rollback en caso de error dentro del bloque 'with'
                 print(f"[ERROR] Rollback por error: {str(e)}")
             raise
         finally:
             if cx:
                 try:
                     cx.close()
-                    print("[DEBUG] Conexion cerrada")
                 except:
                     pass
     
     # =========================================================================
-    # FUNCIONES DE NORMALIZACIÓN Y COMPARACIÓN DE NOMBRES
+    # SECCION 4: NORMALIZACION Y VALIDACION DE DATOS
     # =========================================================================
     
     def normalizar_nombre_empresa(nombre):
         """
-        Normaliza nombres de empresas según las reglas de la HU.
-        
-        Variaciones manejadas:
-            - SAS: S.A.S., S. A. S., S A S, etc.
-            - LTDA: Limitada, Ltda., Ltda
-            - S EN C: S. EN C., Comandita
-            - Mayúsculas/minúsculas
-            - Puntuación y espacios
-        
+        Normaliza nombres de empresas eliminando variantes comunes de tipo societario y puntuacion.
+
+        Esta funcion es esencial para comparar nombres de proveedores que pueden
+        estar escritos de diferentes formas en el XML de la factura vs SAP,
+        permitiendo identificar correctamente la misma entidad legal.
+
         Args:
-            nombre: Nombre de la empresa
-            
+            nombre (str | Any): Nombre de la empresa a normalizar. Puede contener:
+                - Variaciones de tipos societarios (S.A.S., SAS, S A S, etc.)
+                - Puntuacion diversa (puntos, comas, espacios)
+                - Mayusculas/minusculas mezcladas
+
         Returns:
-            str: Nombre normalizado en mayúsculas sin puntuación
+            str: Nombre normalizado con las siguientes transformaciones:
+                - Convertido a MAYUSCULAS.
+                - Sin espacios, puntos ni comas.
+                - Tipos societarios estandarizados:
+                    - S.A.S., S.A.S, S A S, S,A.S. → SAS
+                    - LIMITADA, LTDA., LTDA → LTDA
+                    - S.ENC., S.EN.C., COMANDITA → SENC
+                    - S.A., S.A → SA
+                - Retorna cadena vacia si la entrada es None/vacia/NA.
+
+        Examples:
+            >>> normalizar_nombre_empresa("Empresa Colombia S.A.S.")
+            'EMPRESACOLOMBIASAS'
+            >>> normalizar_nombre_empresa("ACME LIMITADA")
+            'ACMELTDA'
+            >>> normalizar_nombre_empresa("  Compania S. A. S.  ")
+            'COMPANIASAS'
+            >>> normalizar_nombre_empresa(None)
+            ''
+
+        Note:
+            Esta funcion es utilizada por ``comparar_nombres_proveedor()`` para
+            determinar si dos nombres corresponden a la misma entidad legal.
+
+        See Also:
+            comparar_nombres_proveedor: Funcion que usa esta normalizacion.
         """
         if pd.isna(nombre) or nombre == "":
             return ""
         
         nombre = safe_str(nombre).upper().strip()
-        
-        # Eliminar puntuación y espacios para comparación
         nombre_limpio = re.sub(r'[,.\s]', '', nombre)
         
-        # Normalizar variantes de tipo de sociedad
         reemplazos = {
             'SAS': ['SAS', 'S.A.S.', 'S.A.S', 'SAAS', 'S A S', 'S,A.S.', 'S,AS'],
-            'LTDA': ['LIMITADA', 'LTDA', 'LTDA.', 'LTDA,'],
+            'LTDA': ['LIMITADA', 'LTDA', 'LTDA.', 'LTDA'],
             'SENC': ['S.ENC.', 'SENC', 'SENCA', 'COMANDITA', 'SENCS', 'S.EN.C.'],
             'SA': ['SA', 'S.A.', 'S.A']
         }
@@ -320,57 +586,106 @@ def ZPAF_ValidarActivosFijos():
     
     def comparar_nombres_proveedor(nombre_xml, nombre_sap):
         """
-        Compara nombres de proveedores dividiendo por espacios y verificando 
-        que contengan exactamente las mismas palabras sin importar el orden.
+        Compara nombres de proveedores verificando concordancia de palabras (bag of words).
+
+        Esta funcion realiza una comparacion flexible entre el nombre del emisor
+        del XML y el nombre del proveedor en SAP, ignorando el orden de las
+        palabras y aplicando normalizacion de tipos societarios.
+
+        Args:
+            nombre_xml (str | Any): Nombre proveniente del XML de la factura
+                electronica (campo nombre_emisor).
+            nombre_sap (str | Any): Nombre proveniente de SAP, obtenido del
+                historico de ordenes de compra (campo NProveedor).
+
+        Returns:
+            bool: True si ambos nombres contienen las mismas palabras normalizadas
+                (independientemente del orden). False en caso contrario o si
+                alguno de los nombres es None/NA.
+
+        Examples:
+            >>> comparar_nombres_proveedor("ACME S.A.S.", "ACME SAS")
+            True
+            >>> comparar_nombres_proveedor("EMPRESA ABC LTDA", "ABC EMPRESA LIMITADA")
+            True
+            >>> comparar_nombres_proveedor("Proveedor Uno", "Proveedor Dos")
+            False
+            >>> comparar_nombres_proveedor(None, "ACME SAS")
+            False
+
+        Note:
+            El algoritmo de comparacion:
+            1. Normaliza ambos nombres usando ``normalizar_nombre_empresa()``.
+            2. Divide cada nombre en lista de "palabras".
+            3. Verifica que ambas listas tengan el mismo numero de elementos.
+            4. Ordena las listas alfabeticamente y compara igualdad.
+
+        See Also:
+            normalizar_nombre_empresa: Funcion de normalizacion utilizada.
         """
         if pd.isna(nombre_xml) or pd.isna(nombre_sap):
             return False
         
-        # 1. Normalizar y limpiar los textos (asumo que tu función los deja en minúsculas y sin puntuación)
         nombre_xml_limpio = normalizar_nombre_empresa(str(nombre_xml))
         nombre_sap_limpio = normalizar_nombre_empresa(str(nombre_sap))
         
-        # 2. Dividir por espacios para crear las listas de palabras
         lista_xml = nombre_xml_limpio.split()
         lista_sap = nombre_sap_limpio.split()
         
-        # 3. Regla 1: La cantidad de items en ambos listados debe ser la misma
         if len(lista_xml) != len(lista_sap):
             return False
             
-        # 4. Regla 2: Todos los items deben coincidir sin importar la posición.
-        # Usar sorted() organiza las listas alfabéticamente. 
-        # Si tienen los mismos elementos, las listas ordenadas serán idénticas.
         return sorted(lista_xml) == sorted(lista_sap)
-    
-    # =========================================================================
-    # FUNCIONES DE VALIDACION DE DATOS
-    # =========================================================================
 
     def comparar_suma_total(valores_por_calcular, valor_objetivo, tolerancia=500):
         """
-        Suma TODOS los valores de la lista y compara si el total coincide 
-        con el valor objetivo dentro de un rango de tolerancia.
-        
+        Verifica si la suma total de las posiciones coincide con el valor objetivo.
+
+        Esta funcion implementa la logica de validacion de montos para ZPAF,
+        comparando el valor a pagar de la factura (XML) contra la suma de
+        los valores "Por Calcular" de las posiciones en SAP.
+
         Args:
-            valores_por_calcular: Lista de tuplas (posicion, valor)
-            valor_objetivo: Valor a buscar
-            tolerancia: Tolerancia permitida (default: 500)
-            
+            valores_por_calcular (list[tuple]): Lista de tuplas donde cada tupla
+                contiene (posicion, valor). Ejemplo:
+                [('00010', '1000.50'), ('00020', '2500.00')]
+            valor_objetivo (float | str): Valor a buscar, tipicamente el monto
+                total de la factura (LineExtensionAmount o VlrPagarCop).
+            tolerancia (float, optional): Rango de diferencia permitido en pesos
+                colombianos. Por defecto 500 COP.
+
         Returns:
-            tuple: (coincide, lista_todas_posiciones, suma_total)
+            tuple[bool, list, float]: Tupla con tres elementos:
+                - coincide (bool): True si la suma esta dentro de la tolerancia.
+                - lista_posiciones (list): Lista de posiciones usadas si coincide,
+                  lista vacia si no coincide.
+                - suma_total (float): Suma calculada de las posiciones.
+
+        Examples:
+            >>> valores = [('00010', '1000'), ('00020', '2000')]
+            >>> comparar_suma_total(valores, 3000, tolerancia=500)
+            (True, ['00010', '00020'], 3000.0)
+            
+            >>> comparar_suma_total(valores, 5000, tolerancia=500)
+            (False, [], 0)
+            
+            >>> comparar_suma_total([], 1000)
+            (False, [], 0)
+
+        Note:
+            - La tolerancia de $500 COP permite absorber pequenas diferencias
+              por redondeo entre sistemas.
+            - Si el valor_objetivo es 0 o negativo, retorna no coincidencia.
+            - Si la lista de valores esta vacia, retorna no coincidencia.
         """
         valor_objetivo = normalizar_decimal(valor_objetivo)
         
         if valor_objetivo <= 0 or not valores_por_calcular:
             return False, [], 0
             
-        # 1. Sumar TODOS los valores de la lista
         suma_total = sum(normalizar_decimal(valor) for posicion, valor in valores_por_calcular)
         
-        # 2. Comparar esa suma total con el objetivo (+/- tolerancia)
         if abs(suma_total - valor_objetivo) <= tolerancia:
-            # Extraer todas las posiciones, ya que usamos todos los valores
             todas_las_posiciones = [posicion for posicion, valor in valores_por_calcular]
             return True, todas_las_posiciones, suma_total
             
@@ -378,49 +693,127 @@ def ZPAF_ValidarActivosFijos():
     
     def validar_activo_fijo(valor):
         """
-        Valida que el campo Activo fijo esté diligenciado con 9 dígitos.
-        
+        Valida que el campo Activo Fijo tenga exactamente 9 digitos numericos.
+
+        Esta es una regla de negocio especifica para pedidos ZPAF: el campo
+        de activo fijo debe estar diligenciado con un codigo de exactamente
+        9 digitos numericos.
+
         Args:
-            valor: Valor del campo Activo fijo
-            
+            valor (str | Any): Valor del campo Activo Fijo a validar.
+                Puede contener caracteres no numericos que seran ignorados.
+
         Returns:
-            bool: True si es válido (9 dígitos)
+            bool: True si el valor contiene exactamente 9 digitos numericos,
+                False en caso contrario o si esta vacio.
+
+        Examples:
+            >>> validar_activo_fijo("123456789")
+            True
+            >>> validar_activo_fijo("AF-123456789")  # 9 digitos entre caracteres
+            True
+            >>> validar_activo_fijo("12345678")  # Solo 8 digitos
+            False
+            >>> validar_activo_fijo("")
+            False
+            >>> validar_activo_fijo(None)
+            False
+
+        Note:
+            - Solo se cuentan los caracteres numericos (0-9).
+            - Los caracteres no numericos se eliminan antes de contar.
+            - Un valor vacio o None siempre retorna False.
         """
         valor_str = safe_str(valor)
         if not valor_str:
             return False
-        # Limpiar y verificar que sean exactamente 9 dígitos
         valor_limpio = re.sub(r'\D', '', valor_str)
         return len(valor_limpio) == 9
     
     def validar_capitalizado_el(valor):
         """
-        Valida que el campo Capitalizado el NO esté diligenciado.
-        
+        Valida que el campo 'Capitalizado el' NO este diligenciado.
+
+        Esta es una regla de negocio especifica para pedidos ZPAF: el campo
+        "Capitalizado el" NUNCA debe estar diligenciado para activos fijos
+        en proceso de adquisicion.
+
         Args:
-            valor: Valor del campo Capitalizado el
-            
+            valor (str | Any): Valor del campo "Capitalizado el" a validar.
+
         Returns:
-            bool: True si NO está diligenciado (correcto)
+            bool: True si el campo esta vacio, es "null" o es "none".
+                False si contiene cualquier otro valor (esta diligenciado).
+
+        Examples:
+            >>> validar_capitalizado_el("")
+            True
+            >>> validar_capitalizado_el(None)
+            True
+            >>> validar_capitalizado_el("null")
+            True
+            >>> validar_capitalizado_el("2024-01-15")
+            False
+            >>> validar_capitalizado_el("123456789")
+            False
+
+        Note:
+            - Para ZPAF, este campo debe estar siempre vacio.
+            - Si contiene una fecha o cualquier valor, indica que el activo
+              ya fue capitalizado, lo cual es una novedad para este tipo de pedido.
         """
         valor_str = safe_str(valor)
         return valor_str == "" or valor_str.lower() == "null" or valor_str.lower() == "none"
     
     def validar_indicador_impuestos(indicadores_lista):
         """
-        Valida que los indicadores de impuestos sean válidos y no mezclen grupos.
-        
-        Grupo 1 (productores): H4, H5, VP
-        Grupo 2 (no productores): H6, H7, VP
-        
+        Valida coherencia de indicadores de impuestos segun reglas de productores.
+
+        Los pedidos ZPAF tienen reglas especificas sobre que combinaciones de
+        indicadores de impuestos son validas. Los indicadores se dividen en
+        dos grupos mutuamente excluyentes.
+
         Args:
-            indicadores_lista: Lista de indicadores de todas las posiciones
-            
+            indicadores_lista (list[str]): Lista de indicadores de impuestos
+                de las diferentes posiciones del pedido.
+                Valores validos: 'H4', 'H5', 'H6', 'H7', 'VP'
+
         Returns:
-            tuple: (es_valido, mensaje_error, grupo_detectado)
+            tuple[bool, str, str | None]: Tupla con tres elementos:
+                - es_valido (bool): True si los indicadores son validos y coherentes.
+                - mensaje_error (str): Descripcion del error si no es valido,
+                  cadena vacia si es valido.
+                - grupo_detectado (str | None): 'G1', 'G2', 'VP_ONLY', o None si invalido.
+
+        Reglas de validacion:
+            - **Grupo 1 (Productores)**: H4, H5, VP
+            - **Grupo 2 (No Productores)**: H6, H7, VP
+            - VP puede aparecer en cualquier grupo.
+            - NO se permite mezclar indicadores de G1 (H4, H5) con G2 (H6, H7).
+            - Todos los indicadores deben estar diligenciados.
+            - Solo se aceptan los valores especificados.
+
+        Examples:
+            >>> validar_indicador_impuestos(['H4', 'H5', 'VP'])
+            (True, '', 'G1')
+            >>> validar_indicador_impuestos(['H6', 'H7'])
+            (True, '', 'G2')
+            >>> validar_indicador_impuestos(['VP'])
+            (True, '', 'VP_ONLY')
+            >>> validar_indicador_impuestos(['H4', 'H6'])  # Mezcla invalida
+            (False, 'NO se encuentra aplicado correctamente', None)
+            >>> validar_indicador_impuestos(['XX'])  # Valor no valido
+            (False, "NO corresponde alguna de las opciones...", None)
+            >>> validar_indicador_impuestos([])
+            (False, 'NO se encuentra diligenciado', None)
+
+        Note:
+            - H4 y H5 son para proveedores "Productores".
+            - H6 y H7 son para proveedores "No Productores".
+            - VP (Varios Productores) es compatible con ambos grupos.
         """
-        indicadores_validos_g1 = {'H4', 'H5', 'VP'}  # Productores
-        indicadores_validos_g2 = {'H6', 'H7', 'VP'}  # No productores
+        indicadores_validos_g1 = {'H4', 'H5', 'VP'}
+        indicadores_validos_g2 = {'H6', 'H7', 'VP'}
         
         indicadores_limpios = set()
         for ind in indicadores_lista:
@@ -431,13 +824,10 @@ def ZPAF_ValidarActivosFijos():
         if not indicadores_limpios:
             return False, "NO se encuentra diligenciado", None
         
-        # Verificar que todos sean indicadores válidos
         todos_validos = indicadores_limpios.issubset(indicadores_validos_g1.union(indicadores_validos_g2))
         if not todos_validos:
-            invalidos = indicadores_limpios - indicadores_validos_g1.union(indicadores_validos_g2)
             return False, f"NO corresponde alguna de las opciones 'H4', 'H5', 'H6', 'H7' o 'VP' en pedido de Activos fijos", None
         
-        # Determinar el grupo
         tiene_g1 = bool(indicadores_limpios.intersection({'H4', 'H5'}))
         tiene_g2 = bool(indicadores_limpios.intersection({'H6', 'H7'}))
         
@@ -450,19 +840,44 @@ def ZPAF_ValidarActivosFijos():
     
     def validar_criterio_clasif_2(indicador, criterio):
         """
-        Valida que Criterio clasif. 2 corresponda según el Indicador impuestos.
-        
-        Reglas:
-            - H4/H5 → 0001
-            - H6/H7 → 0000
-            - VP → 0001 o 0000
-        
+        Valida que el Criterio de Clasificacion 2 coincida con el Indicador de Impuestos.
+
+        Existe una relacion de dependencia entre el indicador de impuestos y el
+        criterio de clasificacion 2 que debe respetarse para pedidos ZPAF.
+
         Args:
-            indicador: Valor del campo Indicador impuestos
-            criterio: Valor del campo Criterio clasif. 2
-            
+            indicador (str): Indicador de impuestos de la posicion.
+                Valores esperados: 'H4', 'H5', 'H6', 'H7', 'VP'
+            criterio (str): Valor del campo Criterio de Clasificacion 2.
+                Valores esperados: '0001', '0000'
+
         Returns:
-            tuple: (es_valido, mensaje_error)
+            tuple[bool, str]: Tupla con dos elementos:
+                - es_valido (bool): True si la combinacion es valida.
+                - mensaje_error (str): Descripcion del error si no es valido,
+                  cadena vacia si es valido.
+
+        Reglas de validacion:
+            - **H4/H5** (Productores) → Criterio debe ser '0001'
+            - **H6/H7** (No Productores) → Criterio debe ser '0000'
+            - **VP** → Criterio puede ser '0001' o '0000'
+
+        Examples:
+            >>> validar_criterio_clasif_2('H4', '0001')
+            (True, '')
+            >>> validar_criterio_clasif_2('H6', '0000')
+            (True, '')
+            >>> validar_criterio_clasif_2('VP', '0001')
+            (True, '')
+            >>> validar_criterio_clasif_2('H4', '0000')  # Invalido
+            (False, "NO se encuentra aplicado correctamente...")
+            >>> validar_criterio_clasif_2('H5', '')
+            (False, 'NO se encuentra diligenciado')
+
+        Note:
+            El criterio de clasificacion esta relacionado con el tratamiento
+            tributario que corresponde segun el tipo de proveedor (productor
+            o no productor).
         """
         indicador_str = safe_str(indicador).upper().strip()
         criterio_str = safe_str(criterio).strip()
@@ -471,55 +886,106 @@ def ZPAF_ValidarActivosFijos():
             return False, "NO se encuentra diligenciado"
         
         if indicador_str in ('H4', 'H5'):
-            if criterio_str == '0001':
+            if criterio_str == '0001': 
                 return True, ""
-            else:
+            else: 
                 return False, f"NO se encuentra aplicado correctamente segun reglas 'H4 y H5 = 0001', 'H6 y H7 = 0000' o 'VP = 0001 o 0000'"
         
         elif indicador_str in ('H6', 'H7'):
-            if criterio_str == '0000':
+            if criterio_str == '0000': 
                 return True, ""
-            else:
+            else: 
                 return False, f"NO se encuentra aplicado correctamente segun reglas 'H4 y H5 = 0001', 'H6 y H7 = 0000' o 'VP = 0001 o 0000'"
         
         elif indicador_str == 'VP':
-            if criterio_str in ('0001', '0000'):
+            if criterio_str in ('0001', '0000'): 
                 return True, ""
-            else:
+            else: 
                 return False, f"NO se encuentra aplicado correctamente segun reglas 'H4 y H5 = 0001', 'H6 y H7 = 0000' o 'VP = 0001 o 0000'"
         
         return False, "Indicador impuestos no reconocido"
     
     def validar_cuenta_zpaf(cuenta):
         """
-        Valida que el campo Cuenta sea igual a 2695950020.
-        
+        Valida que el campo Cuenta sea estrictamente '2695950020' para pedidos ZPAF.
+
+        Esta es una regla de negocio especifica: todos los pedidos de activos
+        fijos (ZPAF/41) deben contabilizarse en la cuenta 2695950020.
+
         Args:
-            cuenta: Valor del campo Cuenta
-            
+            cuenta (str | Any): Valor del campo Cuenta a validar.
+
         Returns:
-            bool: True si es igual a 2695950020
+            bool: True si la cuenta es exactamente '2695950020',
+                False para cualquier otro valor.
+
+        Examples:
+            >>> validar_cuenta_zpaf('2695950020')
+            True
+            >>> validar_cuenta_zpaf('2695950021')
+            False
+            >>> validar_cuenta_zpaf('')
+            False
+            >>> validar_cuenta_zpaf(None)
+            False
+
+        Note:
+            La cuenta 2695950020 corresponde a "Activos Fijos en Transito" o
+            similar en el plan de cuentas de la organizacion.
         """
         cuenta_str = safe_str(cuenta).strip()
         return cuenta_str == '2695950020'
     
     # =========================================================================
-    # FUNCIONES DE ACTUALIZACIÓN DE BASE DE DATOS
+    # SECCION 5: ACTUALIZACION DE BD Y EXPANSION DE DATOS
     # =========================================================================
     
     def actualizar_bd_cxp(cx, registro_id, campos_actualizar):
         """
-        Actualiza campos en [CxP].[DocumentsProcessing].
-        
-        IMPORTANTE: DocumentsProcessing NO tiene sufijos _dp en sus columnas.
-        
-        Para ObservacionesFase_4: Conserva observaciones previas separadas por coma,
-        pero prima la última observación.
-        
+        Actualiza campos en la tabla principal [CxP].[DocumentsProcessing].
+
+        Esta funcion construye dinamicamente una sentencia UPDATE para modificar
+        uno o mas campos del registro de procesamiento, con logica especial
+        para el campo de observaciones que permite concatenacion.
+
         Args:
-            cx: Conexión a la base de datos
-            registro_id: ID del registro a actualizar
-            campos_actualizar: Diccionario {nombre_campo: valor}
+            cx (pyodbc.Connection): Conexion activa a la base de datos.
+            registro_id (str): Identificador unico del registro (campo [ID]).
+            campos_actualizar (dict): Diccionario con los campos y valores a actualizar.
+                - Las claves son nombres de columnas de la tabla.
+                - Los valores None son ignorados.
+                - El campo 'ObservacionesFase_4' tiene tratamiento especial.
+
+        Returns:
+            None: Los cambios se confirman con commit dentro de la funcion.
+
+        Raises:
+            Exception: Si ocurre un error durante la actualizacion.
+
+        Behavior:
+            - **Campos normales**: Sobrescriben el valor existente.
+            - **ObservacionesFase_4**: Concatena al valor existente separado por
+              coma, o establece el nuevo valor si estaba vacio/NULL.
+
+        Examples:
+            Actualizacion de estado exitoso::
+
+                actualizar_bd_cxp(conexion, "12345", {
+                    "EstadoFinalFase_4": "VALIDACION DATOS DE FACTURACION: Exitoso",
+                    "ResultadoFinalAntesEventos": "PROCESADO"
+                })
+
+            Actualizacion con observaciones (se concatenan)::
+
+                actualizar_bd_cxp(conexion, "12345", {
+                    "ObservacionesFase_4": "Error en indicador de impuestos",
+                    "ResultadoFinalAntesEventos": "CON NOVEDAD"
+                })
+
+        Note:
+            - La tabla destino es [CxP].[DocumentsProcessing].
+            - Se usa parametrizacion para prevenir SQL injection.
+            - Se hace commit despues de cada actualizacion.
         """
         try:
             sets = []
@@ -527,8 +993,8 @@ def ZPAF_ValidarActivosFijos():
             
             for campo, valor in campos_actualizar.items():
                 if valor is not None:
-                    # Manejo especial para ObservacionesFase_4 (concatenar)
                     if campo == 'ObservacionesFase_4':
+                        # Logica especial: concatenar observaciones existentes
                         sets.append(f"[{campo}] = CASE WHEN [{campo}] IS NULL OR [{campo}] = '' THEN ? ELSE [{campo}] + ', ' + ? END")
                         parametros.extend([valor, valor])
                     else:
@@ -538,17 +1004,10 @@ def ZPAF_ValidarActivosFijos():
             if sets:
                 parametros.append(registro_id)
                 sql = f"UPDATE [CxP].[DocumentsProcessing] SET {', '.join(sets)} WHERE [ID] = ?"
-                
                 cur = cx.cursor()
                 cur.execute(sql, parametros)
-                affected_rows = cur.rowcount
+                cx.commit()
                 cur.close()
-                
-                if affected_rows > 0:
-                    print(f"[UPDATE] DocumentsProcessing actualizada - ID {registro_id}")
-                else:
-                    print(f"[WARNING] No se encontro registro ID {registro_id} en DocumentsProcessing")
-            
         except Exception as e:
             print(f"[ERROR] Error actualizando DocumentsProcessing: {str(e)}")
             raise
@@ -558,69 +1017,115 @@ def ZPAF_ValidarActivosFijos():
                                  actualizar_aprobado=True, valor_aprobado=None, 
                                  actualizar_orden_compra=True, val_orden_de_compra=None):
         """
-        Actualiza o inserta items en [dbo].[CxP.Comparativa].
+        Actualiza o inserta items detallados en la tabla de trazabilidad.
+
+        Esta funcion gestiona la tabla [dbo].[CxP.Comparativa] donde se almacena
+        el detalle de cada validacion realizada, permitiendo trazabilidad completa
+        del proceso de validacion de cada campo.
+
+        Args:
+            registro (dict | pd.Series): Registro del documento siendo procesado.
+                Debe contener campos como ID_dp, documenttype_dp, nombre_emisor_dp, etc.
+            cx (pyodbc.Connection): Conexion activa a la base de datos.
+            nit (str): NIT del emisor/proveedor para identificar el registro.
+            factura (str): Numero de factura para identificar el registro.
+            nombre_item (str): Nombre del item de validacion (ej: 'LineExtensionAmount',
+                'TRM', 'ActivoFijo', 'Observaciones', etc.).
+            actualizar_valor_xml (bool, optional): Si actualizar el campo Valor_XML.
+                Por defecto True.
+            valor_xml (str | None, optional): Valor extraido del XML de la factura.
+                Puede contener multiples valores separados por '|'.
+            actualizar_aprobado (bool, optional): Si actualizar el campo Aprobado.
+                Por defecto True.
+            valor_aprobado (str | None, optional): Resultado: 'SI', 'NO', o None.
+                Puede contener multiples valores separados por '|'.
+            actualizar_orden_compra (bool, optional): Si actualizar Valor_Orden_de_Compra.
+                Por defecto True.
+            val_orden_de_compra (str | None, optional): Valor de SAP.
+                Puede contener multiples valores separados por '|'.
+
+        Returns:
+            None: Los cambios se confirman con commit dentro de la funcion.
+
+        Behavior:
+            Para valores con separador '|' (multiples posiciones):
+            - Se crea/actualiza un registro por cada valor.
+            - Si ya existen registros, se actualizan en orden.
+            - Si faltan registros, se insertan nuevos.
+
+        Examples:
+            Registrar validacion de monto::
+
+                actualizar_items_comparativa(
+                    registro=fila, cx=conexion, nit="900123456",
+                    factura="FE-001", nombre_item="LineExtensionAmount",
+                    valor_xml="1500000", valor_aprobado="SI",
+                    val_orden_de_compra="1500000"
+                )
+
+            Registrar multiples posiciones::
+
+                actualizar_items_comparativa(
+                    registro=fila, cx=conexion, nit="900123456",
+                    factura="FE-001", nombre_item="ActivoFijo",
+                    valor_xml=None, valor_aprobado="SI|SI|NO",
+                    val_orden_de_compra="123456789|234567890|12345678"
+                )
+
+        Note:
+            - La tabla destino es [dbo].[CxP.Comparativa].
+            - Se hace commit despues de procesar todos los valores.
         """
         cur = cx.cursor()
         
         def safe_db_val(v):
-            """Convierte strings vacios o 'None' a None real para BD"""
-            if v is None:
+            """Sanitiza valores para insercion en BD."""
+            if v is None: 
                 return None
             s = str(v).strip()
-            if not s or s.lower() == 'none' or s.lower() == 'null':
+            if not s or s.lower() == 'none' or s.lower() == 'null': 
                 return None
             return s
 
-        # 1. Contar items existentes
         query_count = """
         SELECT COUNT(*)
         FROM [dbo].[CxP.Comparativa]
         WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
         """
-        # Se agregó ID_registro para ser precisos con la agrupación
-        cur.execute(query_count, (nit, factura, nombre_item, registro['ID_dp']))
+        cur.execute(query_count, (nit, factura, nombre_item, registro.get('ID_dp','')))
         count_existentes = cur.fetchone()[0]
 
-        # 2. Manejo seguro de los Splits (convirtiendo None a lista vacía)
         lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
         lista_xml = valor_xml.split('|') if valor_xml else []
         lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
 
-        # 3. Obtener el máximo conteo
         maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
-        count_nuevos = maximo_conteo # Corregido: Ya es un entero, no necesita len()
-        
         maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
 
-        # Iterar sobre los valores nuevos para actualizar o insertar
         for i in range(maximo_conteo):
-            # Extraer item de forma segura (si no existe índice, es None)
             item_compra = lista_compra[i] if i < len(lista_compra) else None
             item_xml = lista_xml[i] if i < len(lista_xml) else None
             item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
 
-            # Limpiar valores para la BD
             val_compra = safe_db_val(item_compra)
             val_xml = safe_db_val(item_xml)
             val_aprob = safe_db_val(item_aprob)
 
             if i < count_existentes:
-                # UPDATE: Construcción dinámica de la consulta
+                # Actualizar registro existente
                 set_clauses = []
                 params = []
-
-                if actualizar_orden_compra:
+                if actualizar_orden_compra: 
                     set_clauses.append("Valor_Orden_de_Compra = ?")
                     params.append(val_compra)
-                if actualizar_valor_xml:
+                if actualizar_valor_xml: 
                     set_clauses.append("Valor_XML = ?")
                     params.append(val_xml)
-                if actualizar_aprobado:
+                if actualizar_aprobado: 
                     set_clauses.append("Aprobado = ?")
                     params.append(val_aprob)
 
-                # Si no hay nada que actualizar, continuamos al siguiente ciclo
-                if not set_clauses:
+                if not set_clauses: 
                     continue
 
                 update_query = f"""
@@ -634,32 +1139,56 @@ def ZPAF_ValidarActivosFijos():
                 SET {", ".join(set_clauses)}
                 WHERE rn = ?
                 """
-                # Los parámetros del WHERE van antes del rn
-                final_params = params + [nit, factura, nombre_item, registro['ID_dp'], i + 1]
+                final_params = params + [nit, factura, nombre_item, registro.get('ID_dp',''), i + 1]
                 cur.execute(update_query, final_params)
 
             else:
-                # INSERT: Corregido el número de parámetros (ahora son 7)
+                # Insertar nuevo registro
                 insert_query = """
                 INSERT INTO [dbo].[CxP.Comparativa] (
-                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
-                    Valor_XML, Aprobado
+                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_Documento, 
+                    Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, 
+                    Item, Valor_Orden_de_Compra, Valor_XML, Aprobado
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """
-                cur.execute(insert_query, (registro['Fecha_de_retoma_antes_de_contabilizacion_dp'],registro['documenttype_dp'],registro['numero_de_liquidacion_u_orden_de_compra_dp'],registro['nombre_emisor_dp'], registro['ID_dp'], nit, factura, nombre_item, val_compra, val_xml, val_aprob))
-        
+                cur.execute(insert_query, (
+                    registro.get('Fecha_de_retoma_antes_de_contabilizacion_dp',''),
+                    registro.get('documenttype_dp',''),
+                    registro.get('numero_de_liquidacion_u_orden_de_compra_dp',''),
+                    registro.get('nombre_emisor_dp',''), 
+                    registro.get('ID_dp',''), 
+                    nit, factura, nombre_item, 
+                    val_compra, val_xml, val_aprob
+                ))
+        cx.commit()
         cur.close()
-        print(f"[PROCESADO] Item '{nombre_item}' - {count_nuevos} valor(es) enviados (Existían: {count_existentes})")
     
     def actualizar_estado_comparativa(cx, nit, factura, estado):
         """
-        Actualiza el Estado_validacion_antes_de_eventos en CxP_Comparativa.
-        
+        Actualiza el estado de validacion para todos los registros de una factura.
+
+        Esta funcion establece el campo 'Estado_validacion_antes_de_eventos'
+        para todos los items de comparativa asociados a una combinacion NIT+Factura.
+
         Args:
-            cx: Conexión a BD
-            nit: NIT del proveedor
-            factura: Número de factura
-            estado: Estado a establecer
+            cx (pyodbc.Connection): Conexion activa a la base de datos.
+            nit (str): NIT del emisor/proveedor.
+            factura (str): Numero de factura.
+            estado (str): Estado final de la validacion. Valores tipicos:
+                - "PROCESADO": Validacion exitosa.
+                - "PROCESADO CONTADO": Exitoso con forma de pago contado.
+                - "CON NOVEDAD": Se encontraron discrepancias.
+                - "CON NOVEDAD CONTADO": Discrepancias con pago contado.
+
+        Returns:
+            None: Los cambios se confirman con commit dentro de la funcion.
+
+        Examples:
+            >>> actualizar_estado_comparativa(conexion, "900123456", "FE-001", "PROCESADO")
+
+        Note:
+            - La tabla destino es [dbo].[CxP.Comparativa].
+            - Afecta TODOS los registros (items) de la factura especificada.
         """
         cur = cx.cursor()
         update_sql = """
@@ -668,92 +1197,130 @@ def ZPAF_ValidarActivosFijos():
         WHERE NIT = ? AND Factura = ?
         """
         cur.execute(update_sql, (estado, nit, factura))
+        cx.commit()
         cur.close()
-        print(f"[UPDATE] Estado comparativa: {estado}")
     
     def marcar_orden_procesada(cx, oc_numero, posiciones_string):
         """
-        Actualiza la tabla a 'PROCESADO' para una OC específica y sus posiciones.
-        Ejemplo: marcar_orden_procesada(cx, '4300449290', '00010|00020|00030|00040')
+        Marca las posiciones de una orden de compra como procesadas.
+
+        Esta funcion actualiza el campo 'Marca' en la tabla de historico para
+        indicar que las posiciones especificadas ya fueron validadas, evitando
+        reprocesamiento en ejecuciones futuras.
+
+        Args:
+            cx (pyodbc.Connection): Conexion activa a la base de datos.
+            oc_numero (str): Numero del documento de compra (DocCompra).
+            posiciones_string (str): String con posiciones separadas por pipe (|).
+                Ejemplo: "00010|00020|00030"
+
+        Returns:
+            None: Los cambios se confirman con commit dentro de la funcion.
+
+        Examples:
+            >>> marcar_orden_procesada(conexion, "4500001234", "00010|00020")
+
+        Note:
+            - La tabla destino es [CxP].[HistoricoOrdenesCompra].
+            - El valor de marca establecido es 'PROCESADO'.
+            - Las posiciones vacias son ignoradas.
         """
         cur = cx.cursor()
-        
-        # 1. Hacemos el split de las posiciones
         lista_posiciones = posiciones_string.split('|')
-        
-        # 2. Preparamos el SQL de actualización
-        update_query = """
-        UPDATE [CxP].[HistoricoOrdenesCompra]
-        SET Marca = 'PROCESADO'
-        WHERE DocCompra = ? AND Posicion = ?
-        """
-        
-        # 3. Iteramos solo por las posiciones que llegaron y ejecutamos el UPDATE
+        update_query = "UPDATE [CxP].[HistoricoOrdenesCompra] SET Marca = 'PROCESADO' WHERE DocCompra = ? AND Posicion = ?"
         for posicion in lista_posiciones:
-            # Quitamos espacios en blanco por seguridad
             pos = posicion.strip() 
-            
-            if pos: # Validamos que no esté vacío
+            if pos: 
                 cur.execute(update_query, (oc_numero, pos))
-                
-        # Guardamos los cambios en la base de datos
         cx.commit() 
         cur.close()
-        
-        print(f"✅ OC {oc_numero}: Se marcaron {len(lista_posiciones)} posiciones como 'PROCESADO'.")
-    
-    # =========================================================================
-    # FUNCIONES DE PROCESAMIENTO DE POSICIONES
-    # =========================================================================
     
     def expandir_posiciones_string(valor_string, separador='|'):
         """
-        Expande valores separados por | o comas.
-        
+        Expande una cadena delimitada en una lista de valores individuales.
+
+        Esta funcion procesa campos que contienen multiples valores concatenados,
+        comun en datos de SAP donde informacion de multiples posiciones se
+        almacena en un solo campo.
+
         Args:
-            valor_string: String con valores separados
-            separador: Separador principal (default: |)
-            
+            valor_string (str | Any): Cadena con valores separados.
+                Soporta separador pipe (|) y coma (,).
+            separador (str, optional): Separador principal esperado. Por defecto '|'.
+
         Returns:
-            list: Lista de valores individuales
+            list[str]: Lista de valores individuales, cada uno sin espacios extremos.
+                Lista vacia si la entrada es None/vacia/NA.
+
+        Examples:
+            >>> expandir_posiciones_string("10|20|30")
+            ['10', '20', '30']
+            >>> expandir_posiciones_string("100,200,300")
+            ['100', '200', '300']
+            >>> expandir_posiciones_string(None)
+            []
         """
-        if pd.isna(valor_string) or valor_string == '' or valor_string is None:
+        if pd.isna(valor_string) or valor_string == '' or valor_string is None: 
             return []
-        
         valor_str = safe_str(valor_string)
-        
-        # Intentar con separador |
-        if '|' in valor_str:
+        if '|' in valor_str: 
             return [v.strip() for v in valor_str.split('|') if v.strip()]
-        
-        # Intentar con coma
-        if ',' in valor_str:
+        if ',' in valor_str: 
             return [v.strip() for v in valor_str.split(',') if v.strip()]
-        
-        # Sin separador, devolver como lista de un elemento
         return [valor_str.strip()]
     
     def expandir_posiciones_historico(registro):
         """
-        Expande las posiciones del histórico que están concatenadas en el registro.
-        
-        Los campos del histórico terminan en _hoc y pueden tener múltiples valores
-        separados por | o coma.
-        
+        Desglosa la informacion concatenada del historico en diccionarios por posicion.
+
+        Esta funcion transforma los campos concatenados del registro (donde multiples
+        posiciones estan separadas por '|') en una lista de diccionarios, donde cada
+        diccionario representa una posicion individual con todos sus atributos.
+
         Args:
-            registro: Registro de Trans_Candidatos_HU41 (dict o Series)
-            
+            registro (dict | pd.Series): Registro con campos concatenados del historico.
+                Campos procesados:
+                - Posicion_hoc, PorCalcular_hoc, Trm_hoc, TipoNif_hoc
+                - Acreedor_hoc, FecDoc_hoc, FecReg_hoc, FecContGasto_hoc
+                - IndicadorImpuestos_hoc, TextoBreve_hoc, ClaseDeImpuesto_hoc
+                - Cuenta_hoc, CiudadProveedor_hoc, DocFiEntrada_hoc, Cuenta26_hoc
+                - ActivoFijo_hoc, CapitalizadoEl_hoc, CriterioClasif2_hoc, Moneda_hoc
+                - NProveedor_hoc (campo unico, se replica en todas las posiciones)
+
         Returns:
-            list: Lista de diccionarios con datos de cada posición
+            list[dict]: Lista de diccionarios, uno por cada posicion.
+                Cada diccionario contiene todas las claves de atributos de posicion.
+                Lista vacia si no hay posiciones o si ocurre un error.
+
+        Examples:
+            Registro con 2 posiciones::
+
+                registro = {
+                    'Posicion_hoc': '00010|00020',
+                    'PorCalcular_hoc': '1000|2000',
+                    'ActivoFijo_hoc': '123456789|234567890',
+                    'NProveedor_hoc': 'ACME SAS',
+                    ...
+                }
+                resultado = expandir_posiciones_historico(registro)
+                # [
+                #     {'Posicion': '00010', 'PorCalcular': '1000', 'ActivoFijo': '123456789', 'NProveedor': 'ACME SAS', ...},
+                #     {'Posicion': '00020', 'PorCalcular': '2000', 'ActivoFijo': '234567890', 'NProveedor': 'ACME SAS', ...}
+                # ]
+
+        Note:
+            - Si una lista de valores es mas corta que la lista de posiciones,
+              se usa el primer valor disponible o cadena vacia.
+            - El campo NProveedor_hoc se replica en todas las posiciones ya que
+              es comun para toda la orden de compra.
+            - En caso de error, retorna lista vacia y registra el error en consola.
         """
         try:
-            # Expandir posiciones
             posiciones = expandir_posiciones_string(registro.get('Posicion_hoc', ''))
-            
-            if not posiciones:
+            if not posiciones: 
                 return []
             
-            # Expandir valores correspondientes
+            # Mapeo de campos concatenados
             por_calcular = expandir_posiciones_string(registro.get('PorCalcular_hoc', ''))
             trm_list = expandir_posiciones_string(registro.get('Trm_hoc', ''))
             tipo_nif_list = expandir_posiciones_string(registro.get('TipoNif_hoc', ''))
@@ -772,11 +1339,8 @@ def ZPAF_ValidarActivosFijos():
             capitalizado_el_list = expandir_posiciones_string(registro.get('CapitalizadoEl_hoc', ''))
             criterio_clasif2_list = expandir_posiciones_string(registro.get('CriterioClasif2_hoc', ''))
             moneda_list = expandir_posiciones_string(registro.get('Moneda_hoc', ''))
-            
-            # Datos comunes (usualmente no varían por posición)
             n_proveedor = safe_str(registro.get('NProveedor_hoc', ''))
             
-            # Crear lista de datos por posición
             datos_posiciones = []
             
             for i, posicion in enumerate(posiciones):
@@ -803,64 +1367,41 @@ def ZPAF_ValidarActivosFijos():
                     'Moneda': moneda_list[i] if i < len(moneda_list) else (moneda_list[0] if moneda_list else '')
                 }
                 datos_posiciones.append(datos_pos)
-            
             return datos_posiciones
-            
         except Exception as e:
             print(f"[ERROR] Error expandiendo posiciones del historico: {str(e)}")
             return []
 
     # =========================================================================
-    # INICIO DEL PROCESAMIENTO PRINCIPAL
+    # SECCION 6: LOGICA PRINCIPAL DEL SCRIPT (MAIN)
     # =========================================================================
     
     try:
         print("")
         print("=" * 80)
-        print("[INICIO] Procesamiento ZPAF/41 - Activos Fijos")
+        print("[INFO] INICIO Procesamiento ZPAF/41 - Activos Fijos")
         print("=" * 80)
         
         t_inicio = time.time()
         
-        # 1. Obtener y validar configuración
-        #cfg = parse_config(GetVar("vLocDicConfig"))
-        #############################
-        cfg = {}
-        cfg['ServidorBaseDatos'] = 'localhost\SQLEXPRESS'
-        cfg['NombreBaseDatos'] = 'NotificationsPaddy'
-        cfg['UsuarioBaseDatos'] = 'aa'
-        cfg['ClaveBaseDatos'] = 'aa'
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
-        # cfg[''] = 
+        # ---------------------------------------------------------------------
+        # 1. Obtener y validar configuracion
+        # ---------------------------------------------------------------------
+        cfg = parse_config(GetVar("vLocDicConfig"))
         
-        
-        #----------------------
         print("[INFO] Configuracion cargada exitosamente")
         
-        # Parámetros requeridos (solo BD, no hay archivos maestros)
         required_config = ['ServidorBaseDatos', 'NombreBaseDatos']
-        
         missing_config = [k for k in required_config if not cfg.get(k)]
         if missing_config:
             raise ValueError(f"Faltan parametros de configuracion: {', '.join(missing_config)}")
         
+        # ---------------------------------------------------------------------
         # 2. Conectar a base de datos y obtener registros ZPAF/41
+        # ---------------------------------------------------------------------
         with crear_conexion_db(cfg) as cx:
             print("[INFO] Obteniendo registros ZPAF/41 para procesar...")
             
-            # Query para obtener registros ZPAF y 41 desde Trans_Candidatos_HU41
             query_zpaf = """
                 SELECT * FROM [CxP].[HU41_CandidatosValidacion]
                 WHERE [ClaseDePedido_hoc] IN ('ZPAF', '41')
@@ -872,473 +1413,305 @@ def ZPAF_ValidarActivosFijos():
             
             if len(df_registros) == 0:
                 print("[INFO] No hay registros ZPAF/41 pendientes de procesar")
-                #SetVar("vLocStrResultadoSP", "True")
-                #SetVar("vLocStrResumenSP", "No hay registros ZPAF/41 pendientes de procesar")
+                SetVar("vLocStrResultadoSP", "True")
+                SetVar("vLocStrResumenSP", "No hay registros ZPAF/41 pendientes de procesar")
                 return
             
-            # Variables de conteo
+            # Contadores de procesamiento
             registros_procesados = 0
             registros_con_novedad = 0
             registros_exitosos = 0
-            ##########################################
-            # 3. Procesar cada registro
+            
+            # -----------------------------------------------------------------
+            # 3. Procesar cada registro (Loop Principal)
+            # -----------------------------------------------------------------
             for idx, registro in df_registros.iterrows():
                 try:
+                    # Extraccion segura de datos clave
                     registro_id = safe_str(registro.get('ID_dp', ''))
                     numero_oc = safe_str(registro.get('numero_de_liquidacion_u_orden_de_compra_dp', ''))
                     numero_factura = safe_str(registro.get('numero_de_factura_dp', ''))
                     payment_means = safe_str(registro.get('forma_de_pago_dp', ''))
                     nit = safe_str(registro.get('nit_emisor_o_nit_del_proveedor_dp', ''))
                     
-                    print(f"\n[PROCESO] Registro {registros_procesados + 1}/{len(df_registros)}: OC {numero_oc}, Factura {numero_factura}")
+                    print(f"\n[INFO] Procesando Registro {registros_procesados + 1}/{len(df_registros)}: OC {numero_oc}, Factura {numero_factura}")
                     
-                    # Determinar sufijo CONTADO según PaymentMeans
+                    # Determinar sufijo segun forma de pago
                     sufijo_contado = " CONTADO" if payment_means in ['1', '01'] else ""
                     
-                    # 4. Expandir posiciones del histórico
+                    # ---------------------------------------------------------
+                    # 4. Expandir posiciones del historico
+                    # ---------------------------------------------------------
                     datos_posiciones = expandir_posiciones_historico(registro)
-
-                    # 5. Determinar si es USD
-                    moneda = safe_str(datos_posiciones[0].get('Moneda', '')).upper()
-                    es_usd = moneda == 'USD'
                     
-                    print(f"[DEBUG] Moneda: {moneda}, Es USD: {es_usd}")
+                    if not datos_posiciones:
+                        print(f"[WARNING] Registro {numero_oc} sin posiciones historicas asociadas. Saltando.")
+                        moneda = ""
+                        es_usd = False
+                    else:
+                        moneda = safe_str(datos_posiciones[0].get('Moneda', '')).upper()
+                        es_usd = moneda == 'USD'
                     
-                    # 6. Obtener valor a comparar según moneda
+                    # ---------------------------------------------------------
+                    # 5. Obtener valor a comparar segun moneda
+                    # ---------------------------------------------------------
                     if es_usd:
                         valor_xml = normalizar_decimal(registro.get('VlrPagarCop_dp', 0))
-                        campo_valor_nombre = 'VlrPagarCop'
                     else:
                         valor_xml = normalizar_decimal(registro.get('Valor de la Compra LEA_ddp', 0))
-                        campo_valor_nombre = 'Valor de la Compra LEA (LineExtensionAmount)'
                     
-                    print(f"[DEBUG] Campo valor: {campo_valor_nombre}, Valor XML: {valor_xml}")
-                    
-                    # 7. Preparar valores para búsqueda de combinación
+                    # ---------------------------------------------------------
+                    # 6. Preparar valores para busqueda de combinacion
+                    # ---------------------------------------------------------
                     valores_por_calcular = [(d['Posicion'], d['PorCalcular']) for d in datos_posiciones]
                     
-                    print(f"[DEBUG] Posiciones disponibles: {len(valores_por_calcular)}")
-                    
-                    # 8. Buscar combinación de posiciones que coincida
                     coincidencia_encontrada, posiciones_usadas, suma_encontrada = comparar_suma_total(
                         valores_por_calcular, valor_xml, tolerancia=500
                     )
                     
+                    # ---------------------------------------------------------
+                    # ESCENARIO A: NO HAY COINCIDENCIA MATEMATICA DE MONTOS
+                    # ---------------------------------------------------------
                     if not coincidencia_encontrada:
                         print(f"[INFO] No se encuentra coincidencia del valor a pagar para OC {numero_oc}")
-                        observacion = f"No se encuentra coincidencia del Valor a pagar de la factura, {registro['ObservacionesFase_4_dp']}"
+                        observacion = f"No se encuentra coincidencia del Valor a pagar de la factura, {registro.get('ObservacionesFase_4_dp','')}"
                         resultado_final = f"CON NOVEDAD {sufijo_contado}"
                         
                         campos_novedad = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': resultado_final
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_novedad)
                         
+                        # Actualizacion de Trazabilidad
                         actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
                                                     nombre_item='LineExtensionAmount',
-                                                    valor_xml=registro['valor_a_pagar_dp'], valor_aprobado=None, val_orden_de_compra=None)
-                        
+                                                    valor_xml=registro.get('valor_a_pagar_dp',''), valor_aprobado=None, val_orden_de_compra=None)
                         actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
                                                     nombre_item='Observaciones',
                                                     valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        
                         actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
                                                     nombre_item='VlrPagarCop',
-                                                    valor_xml=registro['VlrPagarCop_dp'], valor_aprobado='NO', val_orden_de_compra='NO ENCONTRADO')
-                        
-                        
+                                                    valor_xml=registro.get('VlrPagarCop_dp',''), valor_aprobado='NO', val_orden_de_compra='NO ENCONTRADO')
                         actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro.get('Posicion_hoc','')))
                         
                         registros_con_novedad += 1
                         registros_procesados += 1
                         continue
                     
+                    # ---------------------------------------------------------
+                    # ESCENARIO B: SI HAY COINCIDENCIA MATEMATICA
+                    # ---------------------------------------------------------
                     else:
-                        
-                        print(f"[DEBUG] Coincidencia encontrada con posiciones: {posiciones_usadas}, Suma: {suma_encontrada}")
-                    
-                        # Filtrar datos de posiciones usadas
                         datos_posiciones_usadas = [d for d in datos_posiciones if d['Posicion'] in posiciones_usadas]
 
+                        # Insertar informacion base en Comparativa
                         actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
                                                     nombre_item='LineExtensionAmount',
-                                                    valor_xml=registro['valor_a_pagar_dp'], valor_aprobado=None, val_orden_de_compra=None)
+                                                    valor_xml=registro.get('valor_a_pagar_dp',''), valor_aprobado=None, val_orden_de_compra=None)
                         actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
                                                     nombre_item='Posicion',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Posicion_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='ValorPorCalcularSAP',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['PorCalcular_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TipoNIF',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['TipoNif_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='Acreedor',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Acreedor_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='FecDoc',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['FecDoc_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='FecReg',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['FecReg_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='FechaContGasto',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['FecContGasto_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='IndicadorImpuestos',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['IndicadorImpuestos_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TextoBreve',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Texto_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='ClaseImpuesto',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['ClaseDeImpuesto_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='Cuenta',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Cuenta_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='CiudadProveedor',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['CiudadProveedor_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='DocFIEntrada',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['DocFiEntrada_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='CTA26',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Cuenta26_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='ActivoFijo',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['ActivoFijo_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='CapitalizadoEl',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['CapitalizadoEl_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='CriterioClasif2',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['CriterioClasif2_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='LineExtensionAmount',
-                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=None)
+                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro.get('Posicion_hoc',''))
                         
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        marcar_orden_procesada(cx, numero_oc, safe_str(registro.get('Posicion_hoc','')))
                         
-                        # Variable para rastrear si hubo alguna novedad
                         hay_novedad = False
                     
-                    # 10. Validar TRM
-                    print(f"[DEBUG] Validando TRM...")
+                    # ---------------------------------------------------------
+                    # VALIDACIONES DE NEGOCIO ESPECIFICAS PARA ZPAF
+                    # ---------------------------------------------------------
                     
-                    trm_xml = normalizar_decimal(registro.get('CalculationRate_dp', 0))
-                    trm_sap = normalizar_decimal(datos_posiciones_usadas[0].get('Trm', 0))
+                    # Proteccion contra listas vacias
+                    if datos_posiciones_usadas:
+                        trm_sap = normalizar_decimal(datos_posiciones_usadas[0].get('Trm', 0))
+                        nombre_proveedor_sap = safe_str(datos_posiciones_usadas[0].get('NProveedor', ''))
+                    else:
+                        trm_sap = 0
+                        nombre_proveedor_sap = ""
                     
+                    # ---------------------------------------------------------
+                    # 10. Validar TRM (Solo si es USD)
+                    # ---------------------------------------------------------
                     if es_usd:
-                        # Solo validar TRM si hay valores
+                        trm_xml = normalizar_decimal(registro.get('CalculationRate_dp', 0))
                         if trm_xml > 0 or trm_sap > 0:
                             trm_coincide = abs(trm_xml - trm_sap) < 0.01
                             
                             if not trm_coincide:
-                                print(f"[INFO] TRM no coincide: XML {trm_xml} vs SAP {trm_sap}")
-                                resultado_final = f"CON NOVEDAD {sufijo_contado}"
-                                observacion = f"No se encuentra coincidencia en el campo TRM de la factura vs la informacion reportada en SAP, {registro['ObservacionesFase_4_dp']}"
+                                observacion = f"No se encuentra coincidencia en el campo TRM de la factura vs la informacion reportada en SAP, {registro.get('ObservacionesFase_4_dp','')}"
                                 hay_novedad = True
-                                
-                                campos_novedad_trm = {
-                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                                campos_novedad = {
+                                    'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
                                     'ObservacionesFase_4': truncar_observacion(observacion),
                                     'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
                                 }
-                                actualizar_bd_cxp(cx, registro_id, campos_novedad_trm)
-                                
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TRM',
-                                                    valor_xml=registro['CalculationRate_dp'], valor_aprobado=None, val_orden_de_compra=None)
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='Observaciones',
-                                                    valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TRM',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Trm_hoc'])
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TRM',
-                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=None)
-                                actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                                actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                                marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                                actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                            nombre_item='TRM',
+                                                            valor_xml=str(trm_xml), valor_aprobado='NO', val_orden_de_compra=str(trm_sap))
                             else:
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TRM',
-                                                    valor_xml=registro['CalculationRate_dp'], valor_aprobado=None, val_orden_de_compra=None)
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='Observaciones',
-                                                    valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TRM',
-                                                    valor_xml=None, valor_aprobado=None, val_orden_de_compra=registro['Trm_hoc'])
-                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                                                    nombre_item='TRM',
-                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=None)
+                                actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                            nombre_item='TRM',
+                                                            valor_xml=str(trm_xml), valor_aprobado='SI', val_orden_de_compra=str(trm_sap))
                     
+                    # ---------------------------------------------------------
                     # 11. Validar Nombre Emisor
-                    print(f"[DEBUG] Validando nombre emisor...")
-                    
+                    # ---------------------------------------------------------
                     nombre_emisor_xml = safe_str(registro.get('nombre_emisor_dp', ''))
-                    nombre_proveedor_sap = safe_str(datos_posiciones_usadas[0].get('NProveedor', ''))
-                    
                     nombres_coinciden = comparar_nombres_proveedor(nombre_emisor_xml, nombre_proveedor_sap)
                     
                     if not nombres_coinciden:
-                        print(f"[INFO] Nombre emisor no coincide: XML '{nombre_emisor_xml}' vs SAP '{nombre_proveedor_sap}'")
-                        observacion = f"No se encuentra coincidencia en Nombre Emisor de la factura vs la informacion reportada en SAP, {registro['ObservacionesFase_4_dp']}"
+                        observacion = f"No se encuentra coincidencia en Nombre Emisor de la factura vs la informacion reportada en SAP, {registro.get('ObservacionesFase_4_dp','')}"
                         hay_novedad = True
-                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
-                        
-                        campos_novedad_nombre = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_nombre)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='NombreEmisor',
-                            valor_xml=registro['nombre_emisor_dp'], valor_aprobado='NO', val_orden_de_compra=registro['NProveedor_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Observaciones',
-                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
-                        
-                    else:
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='NombreEmisor',
-                            valor_xml=registro['nombre_emisor_dp'], valor_aprobado='SI', val_orden_de_compra=registro['NProveedor_hoc'])
-                    
-                    # 12. Validar Activo Fijo (9 dígitos)
-                    print(f"[DEBUG] Validando Activo fijo...")
-                    
-                    aprobados_activo_fijo = []
-                    activo_fijo_valido = True
-                    listado_activoFijo = registro['ActivoFijo_hoc'].split('|')
-                    
-                    for d in listado_activoFijo:
-                        if not validar_activo_fijo(d):
-                            activo_fijo_valido = False
-                    
-                    if not activo_fijo_valido:
-                        print(f"[INFO] Activo fijo no valido en alguna posicion")
-                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
-                        observacion = f'Pedido corresponde a ZPAF pero campo "Activo fijo" NO se encuentra diligenciado y/o NO corresponde a un dato de 9 digitos, {registro['ObservacionesFase_4_dp']}'
-                        hay_novedad = True
-                        
-                        campos_novedad_af = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_af)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='ActivoFijo',
-                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['ActivoFijo_hoc'])
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Observaciones',
-                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
-                        
-                    else:
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='ActivoFijo',
-                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['ActivoFijo_hoc'])
-                        
-                    # 13. Validar Capitalizado el (NUNCA debe estar diligenciado)
-                    print(f"[DEBUG] Validando Capitalizado el...")
-                    
-                    aprobados_capitalizado = []
-                    capitalizado_valido = True
-                    listado_capitalizado = registro['CapitalizadoEl_hoc'].split('|')
-                    for d in listado_capitalizado:
-                        if not validar_capitalizado_el(d):
-                            capitalizado_valido = False
-                    
-                    if not capitalizado_valido:
-                        print(f"[INFO] Capitalizado el esta diligenciado cuando NO deberia")
-                        observacion = f'Pedido corresponde a ZPAF (Activo fijo) pero campo "Capitalizado el" se encuentra diligenciado cuando NUNCA debe estarlo, {registro["ObservacionesFase_4_dp"]}'
-                        hay_novedad = True
-                        resultado_final = f"CON NOVEDAD {sufijo_contado}"
-                        
-                        campos_novedad_cap = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_cap)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Observaciones',
-                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='CapitalizadoEl',
-                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['CapitalizadoEl_hoc'])
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
-                    else:
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='CapitalizadoEl',
-                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['CapitalizadoEl_hoc'])
-                        
-                    # 14. Validar Indicador impuestos
-                    print(f"[DEBUG] Validando Indicador impuestos...")
-                    
-                    listado_indicador = registro['IndicadorImpuestos_hoc'].split('|')
-                    indicador_valido, msg_indicador, grupo_indicador = validar_indicador_impuestos(listado_indicador)
-                    
-                    aprobados_indicador = []
-                    if not indicador_valido:
-                        print(f"[INFO] Indicador impuestos no valido: {msg_indicador}")
-                        observacion = f'Pedido corresponde a ZPAF pero campo "Indicador impuestos" {msg_indicador} , {registro['ObservacionesFase_4_dp']}'
-                        hay_novedad = True
-                        
-                        campos_novedad_ind = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
-                            'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
-                        }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_ind)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Observaciones',
-                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='IndicadorImpuestos',
-                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['IndicadorImpuestos_hoc'])
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
-                    else:
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='IndicadorImpuestos',
-                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['IndicadorImpuestos_hoc'])
-                    
-                    # 15. Validar Criterio clasif. 2
-                    print(f"[DEBUG] Validando Criterio clasif. 2...")
-                    
-                    aprobados_criterio = []
-                    criterio_valido = True
-                    listado_indicador = registro['IndicadorImpuestos_hoc'].split('|')
-                    listado_clasif2 = registro['CriterioClasif2_hoc'].split('|')
-                    
-                    for indicador, criterio in zip(listado_indicador, listado_clasif2):
-    
-                        # Es buena práctica hacer .strip() por si quedaron espacios al hacer el split
-                        es_valido_crit, msg_crit = validar_criterio_clasif_2(indicador.strip(), criterio.strip())
-                        
-                        if es_valido_crit:
-                            aprobados_criterio.append('SI')
-                        else:
-                            aprobados_criterio.append('NO')
-                            criterio_valido = False
-                    
-                    if not criterio_valido:
-                        print(f"[INFO] Criterio clasif. 2 no valido")
-                        # Determinar mensaje según el error
-                        criterios = [d.get('CriterioClasif2', '') for d in datos_posiciones_usadas]
-                        if all(not safe_str(c) for c in criterios):
-                            observacion = f'Pedido corresponde a ZPAF pero campo "Criterio clasif." 2 NO se encuentra diligenciado, {registro['ObservacionesFase_4_dp']}'
-                        else:
-                            observacion = f'Pedido corresponde a ZPAF pero campo "Criterio clasif." 2 NO se encuentra aplicado correctamente segun reglas "H4 y H5 = 0001", "H6 y H7 = 0000" o "VP = 0001 o 0000", {registro['ObservacionesFase_4_dp']}'
-                        hay_novedad = True
-                        
-                        campos_novedad_crit = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                        campos_novedad = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
                             'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
                         }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_crit)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='CriterioClasif2',
-                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['CriterioClasif2_hoc'])
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Observaciones',
-                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='NombreEmisor',
+                                                    valor_xml=nombre_emisor_xml, valor_aprobado='NO', val_orden_de_compra=nombre_proveedor_sap)
                     else:
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='CriterioClasif2',
-                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['CriterioClasif2_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='NombreEmisor',
+                                                    valor_xml=nombre_emisor_xml, valor_aprobado='SI', val_orden_de_compra=nombre_proveedor_sap)
                     
+                    # ---------------------------------------------------------
+                    # 12. Validar Activo Fijo (9 digitos)
+                    # ---------------------------------------------------------
+                    listado_activoFijo = registro.get('ActivoFijo_hoc','').split('|')
+                    activo_fijo_valido = all(validar_activo_fijo(d) for d in listado_activoFijo)
+                    
+                    if not activo_fijo_valido:
+                        observacion = f"Pedido corresponde a ZPAF pero campo 'Activo fijo' NO se encuentra diligenciado y/o NO corresponde a un dato de 9 digitos, {registro.get('ObservacionesFase_4_dp','')}"
+                        hay_novedad = True
+                        campos_novedad = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
+                            'ObservacionesFase_4': truncar_observacion(observacion),
+                            'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
+                        }
+                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='ActivoFijo',
+                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro.get('ActivoFijo_hoc',''))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='ActivoFijo',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro.get('ActivoFijo_hoc',''))
+                        
+                    # ---------------------------------------------------------
+                    # 13. Validar Capitalizado el (NUNCA debe estar diligenciado)
+                    # ---------------------------------------------------------
+                    listado_capitalizado = registro.get('CapitalizadoEl_hoc','').split('|')
+                    capitalizado_valido = all(validar_capitalizado_el(d) for d in listado_capitalizado)
+                    
+                    if not capitalizado_valido:
+                        observacion = f"Pedido corresponde a ZPAF (Activo fijo) pero campo 'Capitalizado el' se encuentra diligenciado cuando NUNCA debe estarlo, {registro.get('ObservacionesFase_4_dp','')}"
+                        hay_novedad = True
+                        campos_novedad = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
+                            'ObservacionesFase_4': truncar_observacion(observacion),
+                            'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
+                        }
+                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='CapitalizadoEl',
+                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro.get('CapitalizadoEl_hoc',''))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='CapitalizadoEl',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro.get('CapitalizadoEl_hoc',''))
+                        
+                    # ---------------------------------------------------------
+                    # 14. Validar Indicador impuestos
+                    # ---------------------------------------------------------
+                    listado_indicador = registro.get('IndicadorImpuestos_hoc','').split('|')
+                    indicador_valido, msg_indicador, grupo_indicador = validar_indicador_impuestos(listado_indicador)
+                    
+                    if not indicador_valido:
+                        observacion = f"Pedido corresponde a ZPAF pero campo 'Indicador impuestos' {msg_indicador} , {registro.get('ObservacionesFase_4_dp','')}"
+                        hay_novedad = True
+                        campos_novedad = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
+                            'ObservacionesFase_4': truncar_observacion(observacion),
+                            'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
+                        }
+                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='IndicadorImpuestos',
+                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro.get('IndicadorImpuestos_hoc',''))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='IndicadorImpuestos',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro.get('IndicadorImpuestos_hoc',''))
+                    
+                    # ---------------------------------------------------------
+                    # 15. Validar Criterio clasif. 2
+                    # ---------------------------------------------------------
+                    criterio_valido = True
+                    listado_clasif2 = registro.get('CriterioClasif2_hoc','').split('|')
+                    
+                    for indicador, criterio in zip_longest(listado_indicador, listado_clasif2, fillvalue=''):
+                        es_valido_crit, msg_crit = validar_criterio_clasif_2(indicador.strip(), criterio.strip())
+                        if not es_valido_crit:
+                            criterio_valido = False
+                    
+                    if not criterio_valido:
+                        observacion = f"Pedido corresponde a ZPAF pero campo 'Criterio clasif.' 2 NO se encuentra aplicado correctamente segun reglas, {registro.get('ObservacionesFase_4_dp','')}"
+                        hay_novedad = True
+                        campos_novedad = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
+                            'ObservacionesFase_4': truncar_observacion(observacion),
+                            'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
+                        }
+                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='CriterioClasif2',
+                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro.get('CriterioClasif2_hoc',''))
+                    else:
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='CriterioClasif2',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro.get('CriterioClasif2_hoc',''))
+                    
+                    # ---------------------------------------------------------
                     # 16. Validar Cuenta (debe ser 2695950020)
-                    print(f"[DEBUG] Validando Cuenta...")
-                    
-                    aprobados_cuenta = []
-                    cuenta_valida = True
-                    listado_cuenta = registro['Cuenta_hoc'].split('|')
-                    
-                    for d in listado_cuenta:
-                        if not validar_cuenta_zpaf(d):
-                            cuenta_valida = False
+                    # ---------------------------------------------------------
+                    listado_cuenta = registro.get('Cuenta_hoc','').split('|')
+                    cuenta_valida = all(validar_cuenta_zpaf(d) for d in listado_cuenta)
                     
                     if not cuenta_valida:
-                        print(f"[INFO] Cuenta no es igual a 2695950020")
-                        observacion = f'Pedido corresponde a ZPAF, pero Campo "Cuenta" NO corresponde a 2695950020, {registro['ObservacionesFase_4_dp']}'
+                        observacion = f"Pedido corresponde a ZPAF, pero Campo 'Cuenta' NO corresponde a 2695950020, {registro.get('ObservacionesFase_4_dp','')}"
                         hay_novedad = True
-                        
-                        campos_novedad_cuenta = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                        campos_novedad = {
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
                             'ObservacionesFase_4': truncar_observacion(observacion),
-                            'ResultadoFinalAntesEventos': f"CON NOVEDAD{sufijo_contado}"
+                            'ResultadoFinalAntesEventos': f"CON NOVEDAD {sufijo_contado}"
                         }
-                        actualizar_bd_cxp(cx, registro_id, campos_novedad_cuenta)
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Cuenta',
-                            valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro['Cuenta_hoc'])
-                        
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Observaciones',
-                            valor_xml=truncar_observacion(observacion), valor_aprobado=None, val_orden_de_compra=None)
-                        
-                        actualizar_estado_comparativa(cx, nit, numero_factura, resultado_final)
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
+                        actualizar_bd_cxp(cx, registro_id, campos_novedad)
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='Cuenta',
+                                                    valor_xml=None, valor_aprobado='NO', val_orden_de_compra=registro.get('Cuenta_hoc',''))
                     else:
-                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura, 
-                            nombre_item='Cuenta',
-                            valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro['Cuenta_hoc'])
+                        actualizar_items_comparativa(cx=cx, registro=registro, nit=nit, factura=numero_factura,
+                                                    nombre_item='Cuenta',
+                                                    valor_xml=None, valor_aprobado='SI', val_orden_de_compra=registro.get('Cuenta_hoc',''))
                     
-                    
+                    # ---------------------------------------------------------
                     # 17. Finalizar registro
+                    # ---------------------------------------------------------
                     if hay_novedad:
                         actualizar_estado_comparativa(cx, nit, numero_factura, f"CON NOVEDAD {sufijo_contado}")
                         registros_con_novedad += 1
                     else:
-                        # Marcar como PROCESADO
-                        doc_compra = safe_str(registro.get('DocCompra_hoc', ''))
-                        
-                        marcar_orden_procesada(cx, numero_oc, safe_str(registro['Posicion_hoc']))
-                        
                         campos_exitoso = {
-                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACIÓN: Exitoso',
+                            'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
                             'ResultadoFinalAntesEventos': f"PROCESADO {sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_exitoso)
-                        
+                        actualizar_estado_comparativa(cx, nit, numero_factura, f"PROCESADO {sufijo_contado}")
                         print(f"[SUCCESS] Registro {registro_id} procesado exitosamente")
                         registros_exitosos += 1
                     
@@ -1347,49 +1720,26 @@ def ZPAF_ValidarActivosFijos():
                 except Exception as e:
                     print(f"[ERROR] Error procesando registro {idx}: {str(e)}")
                     print(traceback.format_exc())
-                    
-                    # SetVar("vGblStrDetalleError", traceback.format_exc())
-                    # SetVar("vGblStrSystemError", "ErrorHU4_4.1")
-                    
                     registros_con_novedad += 1
                     registros_procesados += 1
                     continue
         
-        # Fin del procesamiento
+        # ---------------------------------------------------------------------
+        # Resumen final
+        # ---------------------------------------------------------------------
         tiempo_total = time.time() - t_inicio
-        
-        print("")
-        print("=" * 80)
-        print("[FIN] Procesamiento ZPAF/41 - Activos Fijos completado")
-        print("=" * 80)
-        print("[ESTADISTICAS]")
-        print(f"  Total registros procesados: {registros_procesados}")
-        print(f"  Exitosos: {registros_exitosos}")
-        print(f"  Con novedad: {registros_con_novedad}")
-        print(f"  Tiempo total: {round(tiempo_total, 2)}s")
-        print("=" * 80)
+        print(f"\n[FIN] Tiempo total: {round(tiempo_total, 2)}s")
         
         resumen = f"Procesados {registros_procesados} registros ZPAF/41. Exitosos: {registros_exitosos}, Con novedad: {registros_con_novedad}"
-        
-        # SetVar("vLocStrResultadoSP", "True")
-        # SetVar("vLocStrResumenSP", resumen)
+        SetVar("vLocStrResultadoSP", "True")
+        SetVar("vLocStrResumenSP", resumen)
         
     except Exception as e:
-        exc_type = type(e).__name__
-        print("")
-        print("=" * 80)
+        # ---------------------------------------------------------------------
+        # Manejo de error critico
+        # ---------------------------------------------------------------------
         print("[ERROR CRITICO] La funcion ZPAF_ValidarActivosFijos fallo")
-        print("=" * 80)
-        print(f"[ERROR] Tipo de error: {exc_type}")
-        print(f"[ERROR] Mensaje: {str(e)}")
-        print("[ERROR] Traceback completo:")
         print(traceback.format_exc())
-        print("=" * 80)
-        
-        #SetVar("vGblStrDetalleError", traceback.format_exc())
-        #SetVar("vGblStrSystemError", "ErrorHU4_4.1")
-        #SetVar("vLocStrResultadoSP", "False")
-
-
-
-ZPAF_ValidarActivosFijos()
+        SetVar("vGblStrDetalleError", traceback.format_exc())
+        SetVar("vGblStrSystemError", "ErrorHU4_4.1")
+        SetVar("vLocStrResultadoSP", "False")
