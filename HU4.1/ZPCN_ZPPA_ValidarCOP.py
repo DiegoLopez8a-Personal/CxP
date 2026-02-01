@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de montos en COP (ZPCN/ZPPA).
+
+LOGICA:
+Compara el valor de la factura en pesos colombianos contra el valor registrado en el sistema con una tolerancia definida.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarCOP():
     import json
     import ast

@@ -1,3 +1,4 @@
+# Author: Diego Ivan Lopez Ochoa
 async def ejecutar_HU4_ABCD_CamposObligatorios():
     """
     Ejecuta el SP [CxP].[HU4_ABCD_CamposObligatorios] (NO modificar SP).

@@ -1,3 +1,4 @@
+# Author: Diego Ivan Lopez Ochoa
 def ZPAF_ValidarActivosFijos():
     """
     Orquesta la validacion de pedidos de Activos Fijos (Clases ZPAF o 41).

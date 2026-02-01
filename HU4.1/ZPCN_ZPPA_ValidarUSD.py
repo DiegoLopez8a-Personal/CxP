@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de montos en USD (ZPCN/ZPPA).
+
+LOGICA:
+Compara valores en dólares, aplicando conversión de TRM si es necesario.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarUSD():
     import json, ast, traceback, pyodbc, pandas as pd, numpy as np
     from datetime import datetime

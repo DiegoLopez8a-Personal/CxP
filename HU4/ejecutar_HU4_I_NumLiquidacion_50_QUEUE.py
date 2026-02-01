@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Encolar validación de números de liquidación (Serie 50).
+
+LOGICA:
+Selecciona documentos con OC iniciada en 50 para validaciones específicas de comercializados.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 async def ejecutar_HU4_I_NumLiquidacion_50_QUEUE():
     import asyncio
     import pyodbc

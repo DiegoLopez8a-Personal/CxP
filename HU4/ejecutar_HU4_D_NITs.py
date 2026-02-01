@@ -1,3 +1,4 @@
+# Author: Diego Ivan Lopez Ochoa
 async def ejecutar_HU4_D_NITs():
     """Ejecuta Punto D – Validación NITs contra el SP [CxP].[HU4_D_NITs]."""
     import asyncio

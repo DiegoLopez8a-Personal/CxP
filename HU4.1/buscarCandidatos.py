@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Búsqueda inicial de candidatos.
+
+LOGICA:
+Identifica en `DocumentsProcessing` qué registros son aptos para iniciar el flujo de validación HU4.1.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def buscarCandidatos():
     import json
     import ast

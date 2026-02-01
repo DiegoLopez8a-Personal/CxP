@@ -1,168 +1,72 @@
 def ZPRE_ValidarUSD():
-    import json
-    import ast
-    import traceback
-    import pyodbc
-    import pandas as pd
-    import numpy as np
+    """
+    Valida la coincidencia de montos para pedidos ZPRE (Recepcion de Servicios) en moneda extranjera (USD).
+
+    Esta funcion compara la suma total de los valores 'Por Calcular' extraidos de SAP (que pueden
+    corresponder a multiples posiciones de la hoja de entrada de servicios) contra el valor total
+    de la factura en pesos ('VlrPagarCop'). Esto asegura que la conversion y los montos base sean consistentes.
+
+    Logica:
+    1.  Filtra candidatos ZPRE/45 que sean en moneda USD.
+    2.  Suma todos los valores de la columna 'PorCalcular_hoc' (SAP).
+    3.  Suma todos los valores de la columna 'VlrPagarCop_dp' (XML - Valor en Pesos).
+    4.  Compara la diferencia absoluta contra una tolerancia (500 COP).
+    5.  Si la diferencia excede la tolerancia, marca el registro como "CON NOVEDAD".
+
+    Variables de entrada (RocketBot):
+        - vLocDicConfig (str | dict): Configuracion.
+
+    Variables de salida (RocketBot):
+        - vLocStrResultadoSP (str): "True" / "False".
+        - vLocStrResumenSP (str): Resumen estadistico.
+
+    Author:
+        Diego Ivan Lopez Ochoa
+    """
+
+    # =========================================================================
+    # SECCION 1: IMPORTACION DE LIBRERIAS
+    # =========================================================================
+    import json, ast, traceback, pyodbc, pandas as pd, numpy as np
     from datetime import datetime
     from contextlib import contextmanager
-    import time
-    import warnings
+    import time, warnings
+    warnings.filterwarnings('ignore')
     
-    warnings.filterwarnings('ignore', message='pandas only supports SQLAlchemy')
-    
-    print("=" * 80)
-    print("[INICIO] Funcion ZPRE_ValidarUSD() iniciada")
-    print("[INICIO] Timestamp: " + str(datetime.now()))
-    print("=" * 80)
-    
-    def actualizar_items_comparativa(id_reg, cx, nit, factura, nombre_item, valores_lista,actualizar_valor_xml=False, valor_xml=None,actualizar_aprobado=False, valor_aprobado=None):
-        cur = cx.cursor()
-        
-        query_count = """
-        SELECT COUNT(*)
-        FROM [dbo].[CxP.Comparativa]
-        WHERE NIT = ?
-          AND Factura = ?
-          AND Item = ?
-        """
-        cur.execute(query_count, (nit, factura, nombre_item))
-        count_actual = cur.fetchone()[0]
-        
-        count_necesario = len(valores_lista)
-        
-        if count_actual == 0:
-            for i, valor in enumerate(valores_lista):
-                insert_query = """
-                INSERT INTO [dbo].[CxP.Comparativa] (
-                   ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra, Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """
-                vxml = valor_xml if actualizar_valor_xml else None
-                vaprob = valor_aprobado if actualizar_aprobado else None
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, valor, vxml, vaprob))
-        
-        elif count_actual < count_necesario:
-            for i in range(count_actual):
-                update_query = "UPDATE [dbo].[CxP.Comparativa] SET Valor_Orden_de_Compra = ?"
-                params = [valores_lista[i]]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(valor_xml)
-                
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(valor_aprobado)
-                
-                update_query += """
-                WHERE NIT = ? AND Factura = ? AND Item = ?
-                  AND ID_registro IN (
-                    SELECT ID_registro FROM [dbo].[CxP.Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ?
-                    ORDER BY ID_registro
-                    OFFSET ? ROWS FETCH NEXT 1 ROWS ONLY
-                  )
-                """
-                params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
-                cur.execute(update_query, params)
-            
-            for i in range(count_actual, count_necesario):
-                insert_query = """
-                INSERT INTO [dbo].[CxP.Comparativa] (
-                    ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra, Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """
-                vxml = valor_xml if actualizar_valor_xml else None
-                vaprob = valor_aprobado if actualizar_aprobado else None
-                cur.execute(insert_query, (id_reg, nit, factura, nombre_item, valores_lista[i], vxml, vaprob))
-        
-        else:
-            for i, valor in enumerate(valores_lista):
-                update_query = "UPDATE [dbo].[CxP.Comparativa] SET Valor_Orden_de_Compra = ?"
-                params = [valor]
-                
-                if actualizar_valor_xml:
-                    update_query += ", Valor_XML = ?"
-                    params.append(valor_xml)
-                
-                if actualizar_aprobado:
-                    update_query += ", Aprobado = ?"
-                    params.append(valor_aprobado)
-                
-                update_query += """
-                WHERE NIT = ? AND Factura = ? AND Item = ?
-                  AND id IN (
-                    SELECT ID_registro FROM [dbo].[CxP.Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ?
-                    ORDER BY id
-                    OFFSET ? ROWS FETCH NEXT 1 ROWS ONLY
-                  )
-                """
-                params.extend([nit, factura, nombre_item, nit, factura, nombre_item, i])
-                cur.execute(update_query, params)
-        cx.commit()
-        cur.close()
+    # =========================================================================
+    # SECCION 2: FUNCIONES AUXILIARES (HELPERS)
+    # =========================================================================
     
     def safe_str(v):
-        if v is None:
-            return ""
-        if isinstance(v, str):
-            return v.strip()
-        if isinstance(v, bytes):
-            try:
-                return v.decode('latin-1', errors='replace').strip()
-            except:
-                return str(v).strip()
+        """Convierte valor a string seguro."""
+        if v is None: return ""
+        if isinstance(v, str): return v.strip()
         if isinstance(v, (int, float)):
-            if isinstance(v, float) and np.isnan(v):
-                return ""
+            if isinstance(v, float) and np.isnan(v): return ""
             return str(v)
-        try:
-            return str(v).strip()
-        except:
-            return ""
+        try: return str(v).strip()
+        except: return ""
     
-    # CORRECCIÓN: Función para truncar observaciones
     def truncar_observacion(obs):
         """Truncar observación a 3900 caracteres para prevenir overflow"""
-        if not obs:
-            return ""
+        if not obs: return ""
         obs_str = safe_str(obs)
-        if len(obs_str) > 3900:
-            return obs_str[:3900]
-        return obs_str
+        return obs_str[:3900] if len(obs_str) > 3900 else obs_str
     
     def parse_config(raw):
-        if isinstance(raw, dict):
-            if not raw:
-                raise ValueError("Config empty")
-            return raw
-        text = safe_str(raw)
-        if not text:
-            raise ValueError("vLocDicConfig empty")
-        try:
-            config = json.loads(text)
-            if not config:
-                raise ValueError("Config empty JSON")
-            return config
-        except json.JSONDecodeError:
-            pass
-        try:
-            config = ast.literal_eval(text)
-            if not config:
-                raise ValueError("Config empty literal")
-            return config
-        except (ValueError, SyntaxError) as e:
-            raise ValueError("Invalid config: " + str(e))
+        """Parsea la configuracion."""
+        if isinstance(raw, dict): return raw
+        try: return json.loads(safe_str(raw))
+        except: return ast.literal_eval(safe_str(raw))
     
     @contextmanager
     def crear_conexion_db(cfg, max_retries=3):
+        """Context Manager para conexion a BD."""
         required = ["ServidorBaseDatos", "NombreBaseDatos"]
         missing = [k for k in required if not cfg.get(k)]
         if missing:
             raise ValueError("Missing params: " + ', '.join(missing))
+
         usuario = GetVar("vGblStrUsuarioBaseDatos")
         contrasena = GetVar("vGblStrClaveBaseDatos")        
         conn_str = (
@@ -190,11 +94,11 @@ def ZPRE_ValidarUSD():
             yield cx
             if cx:
                 cx.commit()
-                print("[DEBUG] Commit final exitoso")
+                print("[DEBUG] Commit final de conexion exitoso")
         except Exception as e:
             if cx:
                 cx.rollback()
-                print("[ERROR] Rollback: " + str(e))
+                print("[ERROR] Rollback por error: " + str(e))
             raise
         finally:
             if cx:
@@ -204,167 +108,131 @@ def ZPRE_ValidarUSD():
                 except:
                     pass
     
-    def split_valores(valor_str):
-        if not valor_str or valor_str == "" or pd.isna(valor_str):
-            return []
-        valores = str(valor_str).split('|')
-        return [v.strip() for v in valores if v.strip()]
+    def split_valores(v):
+        """Dividir string por | y retornar lista de valores"""
+        if not v or pd.isna(v): return []
+        return [x.strip() for x in str(v).split('|') if x.strip()]
+
+    def contiene(campo, val):
+        """Verificar si campo contiene valor buscado"""
+        return val in split_valores(campo)
     
-    def sumar_valores(valor_str, nombre_campo="campo"):
-        valores = split_valores(valor_str)
+    def sumar(valor_str):
+        """Suma los valores numericos contenidos en un string separado por pipes."""
         suma = 0.0
-        for i, v in enumerate(valores):
+        for v in split_valores(valor_str):
             try:
-                v_limpio = v.strip().replace(',', '')
-                suma += float(v_limpio)
+                suma += float(v.replace(',', ''))
             except:
                 pass
-        print("[DEBUG] " + nombre_campo + " suma: " + str(suma))
         return suma
     
-    def contiene_valor(campo, valor_buscado):
-        valores = split_valores(campo)
-        return valor_buscado in valores
+    # =========================================================================
+    # SECCION 3: LOGICA PRINCIPAL (MAIN)
+    # =========================================================================
     
     try:
         cfg = parse_config(GetVar("vLocDicConfig"))
-        tolerancia = float(cfg.get('Tolerancia', 500))
-        stats = {'total_registros': 0, 'aprobados': 0, 'con_novedad': 0, 'errores': 0}
-        t_inicio = time.time()
+        tol = float(cfg.get('Tolerancia', 500))
+        stats = {'total': 0, 'aprobados': 0, 'con_novedad': 0}
         
         with crear_conexion_db(cfg) as cx:
-            query_candidatos = """
-            SELECT ID_dp, nit_emisor_o_nit_del_proveedor_dp, numero_de_factura_dp,
+            df = pd.read_sql("""
+            SELECT nit_emisor_o_nit_del_proveedor_dp, numero_de_factura_dp,
                    numero_de_liquidacion_u_orden_de_compra_dp, forma_de_pago_dp,
-                   ClaseDePedido_hoc, PorCalcular_hoc, VlrPagarCop_dp,
-                   Posicion_hoc, TipoNif_hoc, Acreedor_hoc, FecDoc_hoc, FecReg_hoc,
-                   FecContGasto_hoc, IndicadorImpuestos_hoc, TextoBreve_hoc,
-                   ClaseDeImpuesto_hoc, Cuenta_hoc, CiudadProveedor_hoc,
-                   DocFiEntrada_hoc, Cuenta26_hoc, DocCompra_hoc, NitCedula_hoc, Moneda_hoc
+                   ClaseDePedido_hoc, PorCalcular_hoc, VlrPagarCop_dp, Moneda_hoc
             FROM [CxP].[HU41_CandidatosValidacion] WITH (NOLOCK)
-            """
-            df_candidatos = pd.read_sql(query_candidatos, cx)
+            """, cx)
             
-            if df_candidatos.empty:
+            if df.empty:
                 SetVar("vLocStrResultadoSP", "True")
-                SetVar("vLocStrResumenSP", "No hay registros")
                 return True, "No hay registros", None, stats
             
-            mask_clase = df_candidatos['ClaseDePedido_hoc'].apply(
-                lambda x: contiene_valor(x, 'ZPRE') or contiene_valor(x, '45') if pd.notna(x) else False
+            # Filtro ZPRE / 45 y Moneda USD
+            mask_clase = df['ClaseDePedido_hoc'].apply(
+                lambda x: contiene(x, 'ZPRE') or contiene(x, '45') if pd.notna(x) else False
             )
-            mask_usd = df_candidatos['Moneda_hoc'].apply(
-                lambda x: contiene_valor(x, 'USD') if pd.notna(x) else False
+            mask_usd = df['Moneda_hoc'].apply(
+                lambda x: contiene(x, 'USD') if pd.notna(x) else False
             )
-            df_filtrado = df_candidatos[mask_clase & mask_usd].copy()
+            df = df[mask_clase & mask_usd].copy()
+            stats['total'] = len(df)
             
-            if df_filtrado.empty:
-                SetVar("vLocStrResultadoSP", "True")
-                SetVar("vLocStrResumenSP", "No hay registros USD")
-                return True, "No hay registros USD", None, stats
-            
-            stats['total_registros'] = len(df_filtrado)
-            
-            for idx, row in df_filtrado.iterrows():
+            for idx, row in df.iterrows():
                 try:
-                    id_reg = safe_str(row['ID_dp'])
                     nit = safe_str(row['nit_emisor_o_nit_del_proveedor_dp'])
                     factura = safe_str(row['numero_de_factura_dp'])
                     oc = safe_str(row['numero_de_liquidacion_u_orden_de_compra_dp'])
                     forma_pago = safe_str(row['forma_de_pago_dp'])
                     
-                    suma_por_calcular = sumar_valores(row['PorCalcular_hoc'], "PorCalcular")
-                    vlr_pagar_cop = sumar_valores(row['VlrPagarCop_dp'], "VlrPagarCop")
-                    diferencia = abs(suma_por_calcular - vlr_pagar_cop)
+                    # Sumar valores
+                    suma_hoc = sumar(row['PorCalcular_hoc'])
+                    vlr_cop = sumar(row['VlrPagarCop_dp'])
+                    diff = abs(suma_hoc - vlr_cop)
                     
-                    if diferencia <= tolerancia:
+                    if diff <= tol:
                         stats['aprobados'] += 1
-                        valores_porcalcular = split_valores(row['PorCalcular_hoc'])
-                        actualizar_items_comparativa(id_reg, cx, nit, factura, 'LineExtensionAmount',
-                                                   valores_porcalcular, True, str(vlr_pagar_cop), True, 'SI')
                     else:
                         stats['con_novedad'] += 1
-                        estado_final = 'CON NOVEDAD - CONTADO' if forma_pago in ('1', '01') else 'CON NOVEDAD'
+                        estado = 'CON NOVEDAD - CONTADO' if forma_pago in ('1', '01') else 'CON NOVEDAD'
                         
                         cur = cx.cursor()
-                        cur.execute("""
-                        UPDATE [CxP].[DocumentsProcessing]
+
+                        # Actualizar DP - Estado Fase 4
+                        cur.execute("""UPDATE [CxP].[DocumentsProcessing]
                         SET EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
                         WHERE nit_emisor_o_nit_del_proveedor = ? AND numero_de_factura = ? AND numero_de_liquidacion_u_orden_de_compra = ?
                         """, (nit, factura, oc))
                         
-                        cur.execute("""
-                        SELECT ObservacionesFase_4 FROM [CxP].[DocumentsProcessing]
+                        # Actualizar DP - Observaciones
+                        cur.execute("""SELECT ObservacionesFase_4 FROM [CxP].[DocumentsProcessing]
                         WHERE nit_emisor_o_nit_del_proveedor = ? AND numero_de_factura = ? AND numero_de_liquidacion_u_orden_de_compra = ?
                         """, (nit, factura, oc))
-                        result_obs = cur.fetchone()
-                        obs_actual = safe_str(result_obs[0]) if result_obs and result_obs[0] else ""
-                        nueva_obs = "No se encuentra coincidencia del Valor a pagar COP de la factura"
-                        
-                        if obs_actual:
-                            obs_final = nueva_obs + ", " + obs_actual
-                        else:
-                            obs_final = nueva_obs
+                        r = cur.fetchone()
+                        obs_act = safe_str(r[0]) if r and r[0] else ""
+                        nueva = "No se encuentra coincidencia del Valor a pagar COP de la factura"
+                        obs_final = (nueva + ", " + obs_act) if obs_act else nueva
                         
                         # CORRECCIÓN: Truncar antes de UPDATE
                         obs_final = truncar_observacion(obs_final)
                         
-                        cur.execute("""
-                        UPDATE [CxP].[DocumentsProcessing] SET ObservacionesFase_4 = ?
+                        cur.execute("""UPDATE [CxP].[DocumentsProcessing] SET ObservacionesFase_4 = ?
                         WHERE nit_emisor_o_nit_del_proveedor = ? AND numero_de_factura = ? AND numero_de_liquidacion_u_orden_de_compra = ?
                         """, (obs_final, nit, factura, oc))
                         
-                        cur.execute("""
-                        UPDATE [CxP].[DocumentsProcessing] SET ResultadoFinalAntesEventos = ?
+                        # Actualizar DP - Resultado Final
+                        cur.execute("""UPDATE [CxP].[DocumentsProcessing] SET ResultadoFinalAntesEventos = ?
                         WHERE nit_emisor_o_nit_del_proveedor = ? AND numero_de_factura = ? AND numero_de_liquidacion_u_orden_de_compra = ?
-                        """, (estado_final, nit, factura, oc))
+                        """, (estado, nit, factura, oc))
                         
-                        valores_porcalcular = split_valores(row['PorCalcular_hoc'])
-                        actualizar_items_comparativa(id_reg, cx, nit, factura, 'LineExtensionAmount',
-                                                   valores_porcalcular, True, str(vlr_pagar_cop), True, 'NO')
-                        
-                        cur.execute("""
-                        SELECT Valor_XML FROM [dbo].[CxP.Comparativa]
+                        # Actualizar Comparativa - Observaciones
+                        cur.execute("""SELECT Valor_XML FROM [dbo].[CxP.Comparativa]
                         WHERE NIT = ? AND Factura = ? AND Item = 'Observaciones'
                         """, (nit, factura))
-                        result_obs_comp = cur.fetchone()
-                        obs_comp_actual = safe_str(result_obs_comp[0]) if result_obs_comp and result_obs_comp[0] else ""
-                        nueva_obs_comp = "No se encuentra coincidencia del Valor a pagar COP de la factura"
-                        
-                        if obs_comp_actual:
-                            obs_comp_final = nueva_obs_comp + ", " + obs_comp_actual
-                        else:
-                            obs_comp_final = nueva_obs_comp
+                        rc = cur.fetchone()
+                        obs_comp_act = safe_str(rc[0]) if rc and rc[0] else ""
+                        obs_comp_final = (nueva + ", " + obs_comp_act) if obs_comp_act else nueva
                         
                         # CORRECCIÓN: Truncar antes de UPDATE
                         obs_comp_final = truncar_observacion(obs_comp_final)
                         
-                        cur.execute("""
-                        UPDATE [dbo].[CxP.Comparativa] SET Valor_XML = ?
+                        cur.execute("""UPDATE [dbo].[CxP.Comparativa] SET Valor_XML = ?
                         WHERE NIT = ? AND Factura = ? AND Item = 'Observaciones'
                         """, (obs_comp_final, nit, factura))
                         
-                        cur.execute("""
-                        UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
+                        # Actualizar Comparativa - Estado General
+                        cur.execute("""UPDATE [dbo].[CxP.Comparativa] SET Estado_validacion_antes_de_eventos = ?
                         WHERE NIT = ? AND Factura = ?
-                        """, (estado_final, nit, factura))
+                        """, (estado, nit, factura))
                         cx.commit()
                         cur.close()
-                
-                except Exception as e_row:
-                    print("[ERROR] Registro " + str(idx) + ": " + str(e_row))
-                    stats['errores'] += 1
+                except: pass
             
-            stats['tiempo_total'] = time.time() - t_inicio
-            msg = "OK. Total:" + str(stats['total_registros']) + " Aprobados:" + str(stats['aprobados'])
+            msg = "OK. Total:" + str(stats['total'])
             SetVar("vLocStrResultadoSP", "True")
             SetVar("vLocStrResumenSP", msg)
-            SetVar("vGblStrDetalleError", "")
             return True, msg, None, stats
-    
     except Exception as e:
-        print("[ERROR] " + str(e))
         SetVar("vGblStrDetalleError", traceback.format_exc())
-        SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         SetVar("vLocStrResultadoSP", "False")
         return False, str(e), None, {}

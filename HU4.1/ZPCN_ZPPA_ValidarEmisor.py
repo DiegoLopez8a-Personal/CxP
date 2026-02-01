@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación del Emisor (ZPCN/ZPPA).
+
+LOGICA:
+Compara el nombre del emisor en el XML/Factura contra el nombre en SAP usando algoritmos de coincidencia de palabras.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarEmisor():
     import json
     import ast

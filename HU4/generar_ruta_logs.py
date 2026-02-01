@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Generación de rutas para archivos de log.
+
+LOGICA:
+Calcula y valida las rutas donde se almacenarán los logs de ejecución del bot, asegurando que las carpetas existan.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 async def generar_ruta_logs():
     import json
     import os

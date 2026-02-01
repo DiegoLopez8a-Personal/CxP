@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de montos en COP (ZPRE).
+
+LOGICA:
+Lógica específica para documentos ZPRE, comparando `VlrPagarCop` vs `PorCalcular`.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPRE_ValidarCOP():
     import json
     import ast

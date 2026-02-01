@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de TRM (ZPRE).
+
+LOGICA:
+Verificación de tasa de cambio para ZPRE.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPRE_ValidarTRM():
     import json
     import ast

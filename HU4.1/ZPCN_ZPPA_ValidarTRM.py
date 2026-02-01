@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de TRM (Tasa Representativa del Mercado).
+
+LOGICA:
+Para facturas en moneda extranjera, valida que la TRM aplicada sea correcta dentro del rango de tolerancia (0.01).
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarTRM():
     import json
     import ast

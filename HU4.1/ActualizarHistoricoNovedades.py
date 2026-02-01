@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Actualización de histórico de novedades.
+
+LOGICA:
+Transfiere registros con novedades o errores a la tabla histórica `[CxP].[HistoricoNovedades]` para auditoría.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ActualizarHistoricoNovedades():
     import json
     import ast

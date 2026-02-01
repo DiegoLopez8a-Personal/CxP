@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validar la consistencia de la Orden de Compra (Puntos F, G).
+
+LOGICA:
+Cruza la información del documento con el historial de Órdenes de Compra para validar montos, items y vigencia.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 async def ejecutar_HU4_FG_OrdenDeCompra():
     import asyncio
     import pyodbc

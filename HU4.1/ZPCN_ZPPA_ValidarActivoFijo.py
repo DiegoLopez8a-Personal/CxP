@@ -1,3 +1,14 @@
+# Author: Diego Ivan Lopez Ochoa
+"""
+Validación de Activos Fijos (ZPCN/ZPPA).
+
+LOGICA:
+Verifica que la factura corresponda a un activo fijo válido si aplica, consultando tablas de activos en SAP.
+
+VARIABLES ROCKETBOT:
+- vLocDicConfig: Configuracion BD
+- vLocStrResultadoSP: Resultado ejecucion
+"""
 def ZPCN_ZPPA_ValidarActivoFijo():
     import json
     import ast
