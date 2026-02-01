@@ -1,0 +1,187 @@
+async def ejecutar_HU4_I_NumLiquidacion_50_QUEUE():
+    import asyncio
+    import pyodbc
+    import json
+    import ast
+    import traceback
+    import re
+    import unicodedata
+
+    def safe_str(v):
+        try:
+            if v is None:
+                return ""
+            if isinstance(v, (bytes, bytearray)):
+                try:
+                    return bytes(v).decode("utf-8", errors="replace")
+                except Exception:
+                    return bytes(v).decode("cp1252", errors="replace")
+            return str(v)
+        except Exception:
+            return ""
+
+    def to_ascii(s):
+        try:
+            s = "" if s is None else str(s)
+            s = unicodedata.normalize("NFKD", s)
+            s = s.encode("ascii", "ignore").decode("ascii", "ignore")
+            s = "".join(ch if 32 <= ord(ch) <= 126 else " " for ch in s)
+            return " ".join(s.split())
+        except Exception:
+            return ""
+
+    def reset_vars():
+        try:
+            SetVar("vGblStrMensajeError", "")
+            SetVar("vGblStrSystemError", "")
+            SetVar("vLocStrResultadoSP", "")
+            SetVar("vLocStrResumenSP", "")
+            SetVar("vLocStrBatchIdPuntoI", "")
+            SetVar("vLocJsonFileOpsPuntoI", "[]")
+            SetVar("vLocJsonResultadosFileOpsPuntoI", "[]")
+        except Exception:
+            pass
+
+    def set_error(user_msg, exc=None):
+        try:
+            SetVar("vGblStrMensajeError", to_ascii(user_msg))
+            SetVar("vGblStrSystemError", "" if exc is None else to_ascii(traceback.format_exc()))
+            SetVar("vLocStrResultadoSP", False)
+            SetVar("vLocStrResumenSP", to_ascii(user_msg))
+            SetVar("vLocStrBatchIdPuntoI", "")
+            SetVar("vLocJsonFileOpsPuntoI", "[]")
+        except Exception:
+            pass
+
+    def parse_config(raw):
+        if isinstance(raw, dict):
+            return raw
+        t = safe_str(raw).strip()
+        if not t:
+            raise ValueError("vLocDicConfig vacio")
+        try:
+            return json.loads(t)
+        except Exception:
+            return ast.literal_eval(t)
+
+    def is_missing(v):
+        return v in ("", None, "ERROR_NOT_VAR")
+
+    def to_int(v, default):
+        if is_missing(v):
+            return int(default)
+        try:
+            s = safe_str(v).strip()
+            if s.upper() == "ERROR_NOT_VAR":
+                return int(default)
+            return int(float(s))
+        except Exception:
+            return int(default)
+
+    def to_int_or_none(v):
+        if is_missing(v):
+            return None
+        try:
+            s = safe_str(v).strip()
+            if s.upper() == "ERROR_NOT_VAR":
+                return None
+            return int(float(s))
+        except Exception:
+            return None
+
+    def normalize_guid_text(x):
+        t = safe_str(x).strip().replace("{", "").replace("}", "")
+        m = re.search(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", t)
+        return m.group(1) if m else ""
+
+    reset_vars()
+
+    try:
+        cfg = parse_config(GetVar("vLocDicConfig"))
+        servidor = safe_str(cfg["ServidorBaseDatos"]).replace("\\\\", "\\")
+        db = safe_str(cfg["NombreBaseDatos"])
+
+        execution_num = to_int_or_none(GetVar("vGblIntExecutionNum"))
+        if execution_num is None:
+            execution_num = to_int_or_none(cfg.get("executionNum"))
+
+        dias_max = to_int(cfg.get("DiasMaximos", cfg.get("PlazoMaximo", 120)), 120)
+        batch = to_int(cfg.get("BatchSize", cfg.get("Lote", 500)), 500)
+
+    except Exception as e:
+        set_error("ERROR Punto I QUEUE | configuracion", e)
+        return False, None
+
+    def run_sp_sync():
+        conn_str = (
+            "DRIVER={ODBC Driver 17 for SQL Server};"
+            f"SERVER={servidor};"
+            f"DATABASE={db};"
+            "Trusted_Connection=yes;"
+        )
+
+        filas = []
+        batch_id = ""
+
+        with pyodbc.connect(conn_str, unicode_results=False) as conn:
+            conn.autocommit = True
+            cur = conn.cursor()
+
+            cur.execute(
+                "EXEC [CxP].[HU4_I_NumLiquidacion_50] "
+                "@executionNum=?, @DiasMaximos=?, @UseBogotaTime=?, @BatchSize=?, "
+                "@Modo=?, @BatchId=?, @ResultadosJson=?;",
+                execution_num, dias_max, 0, batch,
+                "QUEUE", None, None
+            )
+
+            while True:
+                if cur.description:
+                    cols = [safe_str(c[0]) for c in cur.description]
+                    cols_lower = [safe_str(c[0]).lower() for c in cur.description]
+                    try:
+                        rows = cur.fetchall()
+                    except Exception:
+                        rows = []
+
+                    if rows:
+                        if (not batch_id) and ("batchid" in cols_lower):
+                            idx = cols_lower.index("batchid")
+                            batch_id = normalize_guid_text(rows[0][idx])
+
+                        for r in rows:
+                            d = {}
+                            for i, name in enumerate(cols):
+                                d[safe_str(name)] = safe_str(r[i])
+                            filas.append(d)
+
+                if not cur.nextset():
+                    break
+
+        if not batch_id:
+            for d in filas:
+                if "BatchId" in d:
+                    batch_id = normalize_guid_text(d.get("BatchId"))
+                    if batch_id:
+                        break
+
+        SetVar("vLocStrBatchIdPuntoI", batch_id)
+        SetVar("vLocJsonFileOpsPuntoI", json.dumps(filas, ensure_ascii=True))
+
+        resumen = (
+            f"Punto I QUEUE | SP=CxP.HU4_I_NumLiquidacion_50 | "
+            f"BatchId={batch_id if batch_id else 'NO_DISPONIBLE'} | "
+            f"IDsEnCola={len(filas)} | executionNum={execution_num if execution_num is not None else 'NULL'} | "
+            f"DiasMaximos={dias_max} | BatchSize={batch}"
+        )
+        return True, filas, resumen
+
+    try:
+        loop = asyncio.get_running_loop()
+        ok, filas, resumen = await loop.run_in_executor(None, run_sp_sync)
+        SetVar("vLocStrResultadoSP", bool(ok))
+        SetVar("vLocStrResumenSP", to_ascii(resumen))
+        return bool(ok), filas
+    except Exception as e:
+        set_error("ERROR Punto I QUEUE | ejecucion", e)
+        return False, None
