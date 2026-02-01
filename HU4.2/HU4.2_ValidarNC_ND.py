@@ -384,87 +384,7 @@ def HU42_ValidarNotasCreditoDebito():
         """
         Actualiza o inserta items en la tabla [CxP].[Comparativa_NC].
         
-<<<<<<< Updated upstream
         Utiliza logica de CTE para manejar multiples items identicos (duplicados por splits).
-=======
-        def safe_db_val(v):
-            if v is None: return None
-            s = str(v).strip()
-            if not s or s.lower() == 'none' or s.lower() == 'null': return None
-            return s
-
-        # 1. Contar items existentes
-        query_count = """
-        SELECT COUNT(*)
-        FROM [dbo].[CxP.Comparativa]
-        WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
-        """
-        cur.execute(query_count, (nit, factura, nombre_item, registro_id))
-        count_existentes = cur.fetchone()[0]
-
-        # 2. Manejo seguro de los Splits
-        lista_compra = val_orden_de_compra.split('|') if val_orden_de_compra else []
-        lista_xml = valor_xml.split('|') if valor_xml else []
-        lista_aprob = valor_aprobado.split('|') if valor_aprobado else []
-
-        # 3. Obtener el máximo conteo
-        maximo_conteo = max(len(lista_compra), len(lista_xml), len(lista_aprob))
-        maximo_conteo = 1 if maximo_conteo == 0 else maximo_conteo
-
-        # Iterar sobre los valores nuevos para actualizar o insertar
-        for i in range(maximo_conteo):
-            item_compra = lista_compra[i] if i < len(lista_compra) else None
-            item_xml = lista_xml[i] if i < len(lista_xml) else None
-            item_aprob = lista_aprob[i] if i < len(lista_aprob) else None
-
-            val_compra = safe_db_val(item_compra)
-            val_xml = safe_db_val(item_xml)
-            val_aprob = safe_db_val(item_aprob)
-
-            if i < count_existentes:
-                # UPDATE
-                set_clauses = []
-                params = []
-                if actualizar_orden_compra:
-                    set_clauses.append("Valor_Orden_de_Compra = ?")
-                    params.append(val_compra)
-                if actualizar_valor_xml:
-                    set_clauses.append("Valor_XML = ?")
-                    params.append(val_xml)
-                if actualizar_aprobado:
-                    set_clauses.append("Aprobado = ?")
-                    params.append(val_aprob)
-
-                if not set_clauses: continue
-
-                update_query = f"""
-                WITH CTE AS (
-                    SELECT Valor_Orden_de_Compra, Valor_XML, Aprobado,
-                        ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) as rn
-                    FROM [dbo].[CxP.Comparativa]
-                    WHERE NIT = ? AND Factura = ? AND Item = ? AND ID_registro = ?
-                )
-                UPDATE CTE
-                SET {", ".join(set_clauses)}
-                WHERE rn = ?
-                """
-                # Corregido orden de parámetros: CTE params -> SET params -> WHERE rn param
-                final_params = [nit, factura, nombre_item, registro_id] + params + [i + 1]
-                cur.execute(update_query, final_params)
-
-            else:
-                # INSERT
-                insert_query = """
-                INSERT INTO [dbo].[CxP.Comparativa] (
-                    Fecha_de_retoma_antes_de_contabilizacion, Tipo_de_documento, Orden_de_Compra, Nombre_Proveedor, ID_registro, NIT, Factura, Item, Valor_Orden_de_Compra,
-                    Valor_XML, Aprobado
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """
-                cur.execute(insert_query, (
-                    fecha_retoma, tipo_doc, orden_compra, nombre_proveedor,
-                    registro_id, nit, factura, nombre_item, val_compra, val_xml, val_aprob
-                ))
->>>>>>> Stashed changes
         
         Args:
             registro_id (str): ID del registro unico.
@@ -981,26 +901,12 @@ def HU42_ValidarNotasCreditoDebito():
             }
             nombre_mes = meses[fecha_actual.month]
             
-<<<<<<< Updated upstream
             ruta_carpeta = os.path.join(ruta_base, str(anio), nombre_mes, "INSUMO DE RETORNO")
             
             # Creacion recursiva de directorios
             if not os.path.exists(ruta_carpeta):
                 print(f"[INFO] La carpeta no existe. Creando ruta: {ruta_carpeta}")
                 os.makedirs(ruta_carpeta)
-=======
-            cur = cx.cursor()
-            # La factura referenciada no debe tener ya una nota credito aplicada (o null)
-            # Ordenamos para priorizar la factura 'RECHAZADO' o 'APROBADO' segun logica original (RECHAZADO 1, APROBADO 2, RESTO 3)
-            # Asumo que queremos encontrar la factura original para cruzarla.
-            cur.execute("SELECT TOP 1 * FROM [CxP].[DocumentsProcessing] WHERE [documenttype]='FV' AND [nit_emisor_o_nit_del_proveedor]=? AND [numero_de_factura]=? AND [fecha_de_emision_documento]>=? AND ([NotaCreditoReferenciada] IS NULL OR [NotaCreditoReferenciada]='') ORDER BY CASE [ResultadoFinalAntesEventos] WHEN 'RECHAZADO' THEN 1 WHEN 'APROBADO' THEN 2 ELSE 3 END ASC", (nit, referencia, p_ant))
-            row = cur.fetchone()
-            if row:
-                cols = [d[0] for d in cur.description]
-                return dict(zip(cols, row))
-            return None
-        except: return None
->>>>>>> Stashed changes
 
             ruta_completa = os.path.join(ruta_carpeta, f"{nombre_reporte}_{fecha_solo}.xlsx")
 
@@ -1091,12 +997,8 @@ def HU42_ValidarNotasCreditoDebito():
             # -----------------------------------------------------------------
             # FASE 1: PROCESAMIENTO DE NOTAS CREDITO (NC)
             # -----------------------------------------------------------------
-<<<<<<< Updated upstream
             # Buscamos NC pendientes que no esten ya finalizadas
             df_nc = pd.read_sql("SELECT * FROM [CxP].[DocumentsProcessing] WHERE [tipo_de_documento]='NC' AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('ENCONTRADO', 'NO EXITOSO'))", cx)
-=======
-            df_nc = pd.read_sql("SELECT * FROM [CxP].[DocumentsProcessing] WHERE [documenttype]='NC' AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('ENCONTRADO', 'NO EXITOSO'))", cx)
->>>>>>> Stashed changes
             print(f"[INFO] Procesando {len(df_nc)} Notas Credito (NC)...")
             
             # Limpieza previa de tablas
@@ -1160,7 +1062,6 @@ def HU42_ValidarNotasCreditoDebito():
             
             # Iteracion sobre cada Nota Credito
             for idx, r in df_nc.iterrows():
-<<<<<<< Updated upstream
                 retorno_manual = True if 'EXITOSO' in str(r.get('EstadoFase_3').upper()) else False
                 reg_id = safe_str(r.get('ID', ''))
                 nit = safe_str(r.get('nit_emisor_o_nit_del_proveedor', ''))
@@ -1172,24 +1073,9 @@ def HU42_ValidarNotasCreditoDebito():
                 fecha_retoma = r.get('Fecha_retoma_contabilizacion')
                 tipo_doc = r.get('tipo_de_documento')
                 nombre_prov = r.get('nombre_emisor')
-=======
-                try:
-                    reg_id = safe_str(r.get('ID', ''))
-                    nit = safe_str(r.get('nit_emisor_o_nit_del_proveedor', ''))
-                    num_nc = safe_str(r.get('numero_de_nota_credito', ''))
-                    num_factura = r.get('numero_de_factura') # Puede ser None
-                    obs_anterior = r.get('ObservacionesFase_4')
-                    
-                    # Metadata para Comparativa INSERT
-                    meta_fecha_retoma = r.get('FechaRetoma')
-                    meta_tipo_doc = r.get('documenttype')
-                    meta_orden = r.get('numero_de_liquidacion_u_orden_de_compra')
-                    meta_nombre_prov = r.get('nombre_emisor')
->>>>>>> Stashed changes
 
                 print(f"[INFO] Analizando NC: {num_nc} (ID: {reg_id})")
 
-<<<<<<< Updated upstream
                 # Regla 1: Validacion de plazos de Retoma
                 if not retorno_manual:
                     f_ret = r.get('Fecha_retoma_contabilizacion')
@@ -1218,33 +1104,6 @@ def HU42_ValidarNotasCreditoDebito():
                     else:
                         # Asignamos fecha retoma inicial si no existe
                         cx.cursor().execute("UPDATE [CxP].[DocumentsProcessing] SET [Fecha_de_retoma_antes_de_contabilizacion]=? WHERE [ID]=?", (now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3], reg_id))
-=======
-                    # Validacion Retoma (Solo si no es manual)
-                    if not manual:
-                        f_ret = r.get('fecha_de_retoma')
-                        if campo_con_valor(f_ret):
-                            dias = calcular_dias_diferencia(f_ret, now)
-                            if dias > plazo_max:
-                                obs = f"Registro excede el plazo maximo de retoma, {obs_anterior}"
-                                actualizar_bd_cxp(cx, reg_id, {
-                                    'EstadoFinalFase_4': 'NO EXITOSO',
-                                    'ObservacionesFase_4': truncar_observacion(obs),
-                                    'ResultadoFinalAntesEventos': 'NO EXITOSO'
-                                })
-                                
-                                actualizar_items_comparativa(reg_id, cx, nit, num_factura, 'Observaciones',
-                                                           valor_xml=truncar_observacion(obs),
-                                                           fecha_retoma=meta_fecha_retoma, tipo_doc=meta_tipo_doc,
-                                                           orden_compra=meta_orden, nombre_proveedor=meta_nombre_prov)
-                                
-                                actualizar_estado_comparativa(cx, nit, num_factura, "NO EXITOSO")
-                                actualizar_fecha_retoma(cx, nit, num_factura, r.get('FechaRetoma'))
-                                cnt_nc += 1
-                                continue
-                        else:
-                            # Establecer fecha retoma inicial
-                            cx.cursor().execute("UPDATE [CxP].[DocumentsProcessing] SET [Fecha_de_retoma_antes_de_contabilizacion]=? WHERE [ID]=?", (now.strftime('%Y-%m-%d'), reg_id))
->>>>>>> Stashed changes
 
                 # Regla 2: Validaciones Tributarias (Emisor/Receptor)
                 validaciones = {
@@ -1408,7 +1267,7 @@ def HU42_ValidarNotasCreditoDebito():
             # -----------------------------------------------------------------
             # FASE 2: PROCESAMIENTO DE NOTAS DEBITO (ND)
             # -----------------------------------------------------------------
-            df_nd = pd.read_sql("SELECT * FROM [CxP].[DocumentsProcessing] WHERE [documenttype]='ND' AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('Exitoso')) ORDER BY [executionDate] DESC", cx)
+            df_nd = pd.read_sql("SELECT * FROM [CxP].[DocumentsProcessing] WHERE [tipo_de_documento]='ND' AND ([ResultadoFinalAntesEventos] IS NULL OR [ResultadoFinalAntesEventos] NOT IN ('Exitoso')) ORDER BY [executionDate] DESC", cx)
             print(f"[INFO] Procesando {len(df_nd)} Notas Debito (ND)...")
             
             try:
@@ -1428,14 +1287,7 @@ def HU42_ValidarNotasCreditoDebito():
                     nit = safe_str(r.get('nit_emisor_o_nit_del_proveedor', ''))
                     num_nd = safe_str(r.get('numero_de_nota_debito', ''))
                     
-<<<<<<< Updated upstream
                     nombre_prov = r.get('nombre_emisor')
-=======
-                    meta_fecha_retoma = r.get('FechaRetoma')
-                    meta_tipo_doc = r.get('documenttype')
-                    meta_orden = r.get('numero_de_liquidacion_u_orden_de_compra')
-                    meta_nombre_prov = r.get('nombre_emisor')
->>>>>>> Stashed changes
                     
                     print(f"[INFO] Analizando ND: {num_nd} (ID: {reg_id})")
 

@@ -2280,8 +2280,8 @@ def HU8_GenerarReportesCxP():
                     print(traceback.format_exc())
                     print("=" * 80)
                     
-                    SetVar("vGblStrDetalleError", str(e))
-                    SetVar("vGblStrSystemError", traceback.format_exc())
+                    SetVar("vGblStrDetalleError", str(traceback.format_exc()))
+                    SetVar("vGblStrSystemError", "ErrorHU4_4.1")
                     SetVar("vLocStrResultadoSP", "False")
                     raise(e)
             
@@ -2623,8 +2623,8 @@ def HU8_GenerarReportesCxP():
                 print(traceback.format_exc())
                 print("=" * 80)
                 
-                SetVar("vGblStrDetalleError", str(e))
-                SetVar("vGblStrSystemError", traceback.format_exc())
+                SetVar("vGblStrDetalleError", str(traceback.format_exc()))
+                SetVar("vGblStrSystemError", "ErrorHU4_4.1")
                 SetVar("vLocStrResultadoSP", "False")
                 raise(e)
                         
@@ -2655,8 +2655,8 @@ def HU8_GenerarReportesCxP():
         print(traceback.format_exc())
         print("=" * 80)
         
-        SetVar("vGblStrDetalleError", str(e))
-        SetVar("vGblStrSystemError", traceback.format_exc())
+        SetVar("vGblStrDetalleError", str(traceback.format_exc()))
+        SetVar("vGblStrSystemError", "ErrorHU4_4.1")
         SetVar("vLocStrResultadoSP", "False")
         raise(e)
 
