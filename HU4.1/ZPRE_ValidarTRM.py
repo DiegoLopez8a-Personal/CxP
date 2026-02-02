@@ -1,3 +1,170 @@
+"""
+================================================================================
+SCRIPT: ZPRE_ValidarTRM.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida la Tasa Representativa del Mercado (TRM) para pedidos ZPRE/45
+    con moneda USD. Compara el CalculationRate del XML contra el TRM
+    registrado en el historico de ordenes de compra de SAP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |                 ZPRE_ValidarTRM()                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion y tolerancia TRM desde vLocDicConfig |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Filtrar registros:                                         |
+    |  - ClaseDePedido contiene ZPRE o 45                         |
+    |  - Moneda contiene USD                                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Obtener CalculationRate_dp (XML)                     |  |
+    |  |  Obtener lista TRM_hoc (SAP) - separados por |        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Para cada TRM en lista:                              |  |
+    |  |    SI |TRM_dp - TRM_hoc| <= tolerancia:               |  |
+    |  |      -> Coincidencia encontrada                       |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI coincide con alguno:                              |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI no coincide con ninguno:                          |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+        - ToleranciaTRM: Tolerancia para comparacion TRM (default: 10)
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "OK. Total:X Aprobados:Y"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    1. ClaseDePedido contiene: ZPRE o 45
+    2. Moneda contiene: USD
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    TRM (Tasa Representativa del Mercado):
+        - CalculationRate_dp (XML) - valor numerico
+        - TRM_hoc (SAP) - lista de valores separados por |
+        - Tolerancia por defecto: $10 COP
+        - Se aprueba si coincide con AL MENOS UN valor de la lista
+        
+    Si no coincide con ningun TRM:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No se encuentra coincidencia de TRM"
+
+================================================================================
+TABLAS ACTUALIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "ToleranciaTRM": 10
+    }))
+    
+    # Ejecutar funcion
+    ZPRE_ValidarTRM()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - TRM se compara contra todos los valores en lista HOC
+    - Basta que coincida con UNO para aprobar
+    - Valores con comas se convierten (ej: "4,500.00" -> 4500.00)
+    - Observaciones se truncan a 3900 caracteres
+    - Errores por registro se loguean pero no detienen proceso
+
+================================================================================
+"""
+
 def ZPRE_ValidarTRM():
     import json
     import ast

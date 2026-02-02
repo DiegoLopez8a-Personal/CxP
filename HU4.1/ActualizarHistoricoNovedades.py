@@ -1,3 +1,164 @@
+"""
+================================================================================
+SCRIPT: ActualizarHistoricoNovedades.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Actualiza y mantiene la tabla de historico de novedades [CxP].[HistoricoNovedades].
+    Inserta nuevos registros con estado CON NOVEDAD y actualiza registros existentes
+    con fechas de documento y registro desde el historico de ordenes de compra.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |          ActualizarHistoricoNovedades()                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Verificar/Crear tabla [CxP].[HistoricoNovedades]           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 1: Consultar registros CON NOVEDAD                    |
+    |  de [CxP].[DocumentsProcessing]                             |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 2: Para cada registro CON NOVEDAD:                    |
+    |  +-------------------------------------------------------+  |
+    |  |  Verificar si ya existe en HistoricoNovedades         |  |
+    |  |  Buscar fechas en HistoricoOrdenesCompra              |  |
+    |  +-------------------------------------------------------+  |
+    |  |  CASO 1: No existe -> INSERT nuevo registro           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  CASO 2: Existe con fechas -> UPDATE                  |  |
+    |  +-------------------------------------------------------+  |
+    |  |  CASO 3: Existe sin fechas -> SKIP                    |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 3: Buscar registros con 'NO ENCONTRADO'               |
+    |  Actualizar si ahora estan APROBADOS                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+ESTRUCTURA TABLA [CxP].[HistoricoNovedades]
+================================================================================
+
+    Columna                  Tipo              Descripcion
+    -------                  ----              -----------
+    Fecha_ejecucion          DATETIME          Fecha de la ejecucion actual
+    Fecha_de_retoma          DATETIME          Fecha de retoma del documento
+    ID_ejecucion             NVARCHAR(MAX)     Identificador de la ejecucion
+    ID_registro              NVARCHAR(MAX)     ID del registro en DocumentsProcessing
+    Nit                      NVARCHAR(MAX)     NIT del proveedor
+    Nombre_Proveedor         NVARCHAR(MAX)     Nombre del proveedor
+    Orden_de_compra          NVARCHAR(MAX)     Numero de orden de compra
+    Factura                  NVARCHAR(MAX)     Numero de factura
+    Fec_Doc                  NVARCHAR(MAX)     Fecha del documento (de HOC)
+    Fec_Reg                  NVARCHAR(MAX)     Fecha de registro (de HOC)
+    Observaciones            NVARCHAR(MAX)     Observaciones de la novedad
+
+================================================================================
+CASOS DE PROCESAMIENTO
+================================================================================
+
+    CASO 1 - INSERT (Nuevo registro):
+        Condicion: No existe en HistoricoNovedades
+        Accion: Insertar con todas las columnas
+        
+    CASO 2 - UPDATE (Existe con fechas):
+        Condicion: Existe y se encontraron fechas en HOC
+        Accion: Actualizar Fecha_ejecucion, Fec_Doc, Fec_Reg, Observaciones
+        
+    CASO 3 - SKIP (Existe sin fechas):
+        Condicion: Existe pero no hay fechas nuevas
+        Accion: No hacer nada
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        "Historico actualizado. Nuevos:X Actualizados:Y"
+
+    vLocDicEstadisticas : str
+        Diccionario con:
+        - total_registros
+        - nuevos_insertados
+        - actualizados
+        - actualizados_no_encontrado
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy"
+    }))
+    
+    # Ejecutar funcion
+    ActualizarHistoricoNovedades()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Crea la tabla automaticamente si no existe
+    - Busca fechas en HistoricoOrdenesCompra por NIT + DocCompra
+    - "NO ENCONTRADO" se usa como valor placeholder para fechas
+    - Actualiza registros que pasaron de CON NOVEDAD a APROBADO
+
+================================================================================
+"""
+
+def ActualizarHistoricoNovedades():
+    """
+    Actualiza tabla de historico de novedades.
+    
+    Inserta nuevos registros CON NOVEDAD y actualiza existentes
+    con fechas del historico de ordenes de compra.
+    
+    Returns:
+        tuple: (exito, mensaje, None, stats)
+    """
+    # ... codigo de implementacion ...
+    pass
+
 def ActualizarHistoricoNovedades():
     import json
     import ast

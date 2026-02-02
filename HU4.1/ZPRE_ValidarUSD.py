@@ -1,3 +1,142 @@
+"""
+================================================================================
+SCRIPT: ZPRE_ValidarUSD.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida el valor a pagar en COP para pedidos ZPRE/45 (Prepagos) con moneda USD.
+    Compara la suma de valores PorCalcular del historico de ordenes de compra
+    contra el valor a pagar COP de la factura.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |                 ZPRE_ValidarUSD()                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion y tolerancia desde vLocDicConfig     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    |  Filtrar: ClaseDePedido = ZPRE o 45                         |
+    |  Filtrar: Moneda = USD                                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Calcular suma de PorCalcular_hoc                     |  |
+    |  |  Obtener VlrPagarCop_dp                               |  |
+    |  |  Calcular diferencia absoluta                         |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI diferencia <= tolerancia:                         |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI diferencia > tolerancia:                          |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+        - Tolerancia: Tolerancia para comparacion (default: 500)
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "OK. Total:X"
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    1. ClaseDePedido contiene: ZPRE o 45
+    2. Moneda contiene: USD
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    Valor a Pagar COP:
+        - Suma de PorCalcular_hoc (valores separados por |)
+        - VlrPagarCop_dp (valor del XML)
+        - Tolerancia por defecto: $500 COP
+        
+    Si diferencia > tolerancia:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No se encuentra coincidencia del Valor a pagar COP..."
+
+================================================================================
+TABLAS ACTUALIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "Tolerancia": 500
+    }))
+    
+    # Ejecutar funcion
+    ZPRE_ValidarUSD()
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Suma valores separados por | individualmente
+    - Conversion de TRM ya aplicada en VlrPagarCop
+    - Observaciones se truncan a 3900 caracteres
+    - Errores por registro no detienen el proceso
+
+================================================================================
+"""
+
 def ZPRE_ValidarUSD():
     import json
     import ast

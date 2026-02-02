@@ -1,3 +1,213 @@
+"""
+================================================================================
+SCRIPT: HU4_1_ZVEN.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida pedidos ZVEN/50 (Pedidos Comercializados) realizando cruces de
+    informacion entre multiples fuentes de datos: Maestro de Comercializados,
+    Asociacion cuenta indicador y el Historico de Ordenes de Compra de SAP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |            ZVEN_ValidarComercializados()                    |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  1. Cargar configuracion desde vLocDicConfig                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  2. Validar archivos maestros:                              |
+    |     - Maestro de Comercializados (Excel)                    |
+    |     - Asociacion cuenta indicador (Excel)                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  3. Conectar a base de datos SQL Server                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  4. Consultar candidatos ZVEN/50                            |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  5. Para cada registro:                                     |
+    |  +-------------------------------------------------------+  |
+    |  |  a. Buscar en Maestro de Comercializados              |  |
+    |  |     SI no encuentra -> EN ESPERA - COMERCIALIZADOS    |  |
+    |  +-------------------------------------------------------+  |
+    |  |  b. Validar LineExtensionAmount vs SAP                |  |
+    |  |     SI diferencia > tolerancia -> CON NOVEDAD         |  |
+    |  +-------------------------------------------------------+  |
+    |  |  c. Validar TRM (si USD)                              |  |
+    |  |     SI no coincide -> CON NOVEDAD                     |  |
+    |  +-------------------------------------------------------+  |
+    |  |  d. Validar Cantidad y Precio Unitario                |  |
+    |  |     SI no coincide -> CON NOVEDAD                     |  |
+    |  +-------------------------------------------------------+  |
+    |  |  e. Validar Nombre Emisor                             |  |
+    |  |     SI no coincide -> CON NOVEDAD                     |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI todas pasan -> PROCESADO                          |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  6. Actualizar resultados en BD                             |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  7. Retornar estadisticas a RocketBot                       |
+    +-------------------------------------------------------------+
+
+================================================================================
+FUENTES DE DATOS
+================================================================================
+
+    1. Archivo Maestro de Comercializados (Excel):
+       - Contiene informacion de OC, facturas, valores totales y posiciones
+       - Ruta: RutaInsumosComercializados en config
+       
+    2. Archivo Asociacion cuenta indicador (Excel):
+       - Informacion de cuentas contables y agrupaciones de proveedores
+       - Ruta: RutaInsumoAsociacion en config
+       
+    3. Historico de Ordenes de Compra (SAP via SQL):
+       - Datos transaccionales de SAP
+       - Tabla: [CxP].[HistoricoOrdenesCompra]
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+        - RutaInsumosComercializados: Ruta al archivo Maestro
+        - RutaInsumoAsociacion: Ruta al archivo Asociacion
+        - CarpetaDestinoComercializados: Carpeta de salida
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        "Procesados X registros ZVEN. Exitosos: Y, Con novedad: Z, En espera: W"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error critico
+
+    vGblStrSystemError : str
+        "Error_HU4.1_ZVEN" en caso de error
+
+================================================================================
+ESTADOS FINALES POSIBLES
+================================================================================
+
+    - PROCESADO: Validacion exitosa sin novedades
+    - PROCESADO CONTADO: Validacion exitosa, forma de pago contado
+    - CON NOVEDAD: Se encontraron discrepancias
+    - CON NOVEDAD - COMERCIALIZADOS: Discrepancias especificas
+    - EN ESPERA - COMERCIALIZADOS: No encontrado en maestro
+
+================================================================================
+VALIDACIONES REALIZADAS
+================================================================================
+
+    1. Busqueda en Maestro:
+       - Verifica existencia en archivo Excel de comercializados
+       
+    2. LineExtensionAmount:
+       - Compara valor de factura vs suma de posiciones SAP
+       - Tolerancia: $500 COP o 0.01 para decimales
+       
+    3. TRM (operaciones USD):
+       - Compara tasa de cambio del XML vs SAP
+       
+    4. Cantidad y Precio Unitario:
+       - Compara por cada linea de la factura
+       - Tolerancia de 1 unidad
+       
+    5. Nombre Emisor:
+       - Compara proveedor XML vs SAP con normalizacion
+
+================================================================================
+FUNCIONES AUXILIARES DESTACADAS
+================================================================================
+
+    safe_str(v):
+        Convierte cualquier valor a string de forma segura
+        
+    truncar_observacion(obs):
+        Trunca observaciones a 3900 caracteres
+        
+    normalizar_decimal(val):
+        Normaliza valores decimales para comparacion
+        
+    comparar_nombres_proveedor(nombre1, nombre2):
+        Compara nombres con normalizacion avanzada
+        
+    expandir_posiciones_string(valor):
+        Expande valores separados por | a lista
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "CxP_Database",
+        "RutaInsumosComercializados": "C:/Insumos/Maestro.xlsx",
+        "RutaInsumoAsociacion": "C:/Insumos/Asociacion.xlsx",
+        "CarpetaDestinoComercializados": "C:/Salida/Comercializados"
+    }))
+    
+    # Ejecutar la funcion
+    ZVEN_ValidarComercializados()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Errores individuales por registro NO detienen el proceso
+    - Solo errores criticos de infraestructura detienen el bot
+    - Warnings de pandas sobre SQLAlchemy deshabilitados
+    - Archivos maestros se cargan una vez al inicio
+    - Tolerancia de $500 COP para montos, 0.01 para decimales
+
+================================================================================
+"""
+
 def ZVEN_ValidarComercializados():
     """
     Funcion principal para procesar las validaciones de pedidos ZVEN/50 (Pedidos Comercializados).

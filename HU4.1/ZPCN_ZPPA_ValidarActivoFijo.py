@@ -1,3 +1,146 @@
+"""
+================================================================================
+SCRIPT: ZPCN_ZPPA_ValidarActivoFijo.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida campos de Activo Fijo para pedidos ZPCN/ZPPA/42.
+    Implementa logica diferenciada segun el pedido tenga o no Activo Fijo:
+    - CON Activo Fijo: Valida formato 9 digitos, IndicadorImpuestos, CriterioClasif2
+    - SIN Activo Fijo (GENERALES): Valida Cuenta, IndicadorImpuestos, CentroDeCoste
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |          ZPCN_ZPPA_ValidarActivoFijo()                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Cargar archivo Excel: Impuestos_especiales_CXP.xlsx        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    |  Filtrar: ClaseDePedido = ZPCN, ZPPA o 42                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro, por cada posicion:                     |
+    |  +-------------------------------------------------------+  |
+    |  |  Obtener: ActivoFijo, IndicadorImpuestos, Cuenta,     |  |
+    |  |          CentroDeCoste, CriterioClasif2               |  |
+    |  +-------------------------------------------------------+  |
+    |                            |                                |
+    |     +----------------------+----------------------+         |
+    |     |                                             |         |
+    |     v                                             v         |
+    |  ActivoFijo tiene valor?                    ActivoFijo vacio|
+    |  (CON ACTIVO FIJO)                          (GENERALES)     |
+    |     |                                             |         |
+    |     v                                             v         |
+    |  - Validar formato 9 digitos              - Validar Cuenta  |
+    |  - Validar IndicadorImpuestos             - Validar IndImp  |
+    |  - Validar CriterioClasif2                - Validar Centro  |
+    |  - Validar Cuenta = 1580050003            - Buscar en Excel |
+    |                                                             |
+    +-------------------------------------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+ARCHIVO EXCEL REQUERIDO
+================================================================================
+
+    RutaArchivoImpuestos: Ruta al archivo Impuestos_especiales_CXP.xlsx
+    
+    Estructura esperada:
+        - Columna 'Centro coste': Codigo del centro de coste
+        - Columnas de indicadores: H4, H5, H6, H7, VP, CO, IC, CR
+        - Valores 'X' indican que el indicador es permitido para ese centro
+
+================================================================================
+REGLAS DE VALIDACION - CON ACTIVO FIJO
+================================================================================
+
+    1. Formato Activo Fijo:
+       - Debe tener exactamente 9 digitos numericos
+       - Patron: ^\d{9}$
+       
+    2. Indicador Impuestos:
+       - Valores permitidos: H4, H5, H6, H7, VP
+       - No se permiten mezclar grupos (H4/H5 vs H6/H7)
+       
+    3. Criterio Clasif. 2:
+       - H4/H5 -> debe ser '0001'
+       - H6/H7 -> debe ser '0000'
+       - VP -> puede ser '0001' o '0000'
+       
+    4. Cuenta:
+       - Debe ser '1580050003'
+
+================================================================================
+REGLAS DE VALIDACION - GENERALES (SIN ACTIVO FIJO)
+================================================================================
+
+    1. Cuenta:
+       - Debe tener algun valor (no vacio)
+       
+    2. Indicador Impuestos:
+       - Debe tener valor
+       
+    3. Centro de Coste:
+       - Debe tener valor
+       - Debe existir en archivo Excel
+       - IndicadorImpuestos debe estar en lista permitida del Excel
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+        - RutaArchivoImpuestos: Ruta al archivo Excel de impuestos
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen con estadisticas
+
+    vLocDicEstadisticas : str
+        Diccionario detallado de estadisticas
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Procesa posicion por posicion (valores separados por |)
+    - Crea items en Comparativa si no existen
+    - Archivo Excel se carga una sola vez al inicio
+    - Cada posicion puede tener diferente camino de validacion
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarActivoFijo():
     import json
     import ast

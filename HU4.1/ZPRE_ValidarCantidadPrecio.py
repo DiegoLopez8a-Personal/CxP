@@ -1,3 +1,172 @@
+"""
+================================================================================
+SCRIPT: ZPRE_ValidarCantidadPrecio.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida cantidad y precio unitario para pedidos ZPRE/45 (Prepagos).
+    Compara los valores de cantidad y precio del XML de factura contra
+    los valores reportados en el historico de ordenes de compra de SAP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |            ZPRE_ValidarCantidadPrecio()                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion y tolerancia desde vLocDicConfig     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Filtrar registros:                                         |
+    |  - ClaseDePedido contiene ZPRE o 45                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Extraer listas de valores:                           |  |
+    |  |  - precios_hoc, cantidades_hoc (SAP)                  |  |
+    |  |  - precios_ddp, cantidades_ddp (XML)                  |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Comparar posicion por posicion:                      |  |
+    |  |  - |precio_hoc[i] - precio_ddp[i]| <= tolerancia      |  |
+    |  |  - |cantidad_hoc[i] - cantidad_ddp[i]| <= tolerancia  |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI todas las posiciones coinciden:                   |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI alguna posicion no coincide:                      |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+        - Tolerancia: Tolerancia para comparacion (default: 500)
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "OK. Total:X"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    ClaseDePedido contiene: ZPRE o 45
+
+================================================================================
+VALIDACIONES REALIZADAS
+================================================================================
+
+    1. Precio Unitario:
+        - Compara PrecioUnit_hoc vs "Precio Unitario del producto_ddp"
+        - Posicion por posicion (valores separados por |)
+        - Tolerancia aplicada a cada comparacion
+        
+    2. Cantidad:
+        - Compara CantProd_hoc vs "Cantidad de producto_ddp"
+        - Posicion por posicion (valores separados por |)
+        - Tolerancia aplicada a cada comparacion
+
+    Si alguna posicion excede tolerancia:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No coincide cantidad o precio unitario"
+
+================================================================================
+TABLAS ACTUALIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "Tolerancia": 500
+    }))
+    
+    # Ejecutar funcion
+    ZPRE_ValidarCantidadPrecio()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Valores se comparan posicion por posicion
+    - Si hay diferente numero de posiciones, compara hasta el minimo
+    - Observaciones se truncan a 3900 caracteres
+    - Errores por registro no detienen el proceso
+
+================================================================================
+"""
+
 def ZPRE_ValidarCantidadPrecio():
     import json, ast, traceback, pyodbc, pandas as pd, numpy as np
     from datetime import datetime

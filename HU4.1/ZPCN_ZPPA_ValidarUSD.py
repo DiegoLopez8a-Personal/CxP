@@ -1,3 +1,165 @@
+"""
+================================================================================
+SCRIPT: ZPCN_ZPPA_ValidarUSD.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida el valor a pagar en COP para pedidos ZPCN/ZPPA/42 con moneda USD.
+    Compara la suma de valores PorCalcular del historico de ordenes de compra
+    contra el valor a pagar COP de la factura.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |               ZPCN_ZPPA_ValidarUSD()                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion y tolerancia desde vLocDicConfig     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Filtrar registros:                                         |
+    |  - ClaseDePedido contiene ZPCN, ZPPA o 42                   |
+    |  - Moneda contiene USD                                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Calcular suma de PorCalcular_hoc                     |  |
+    |  |  Obtener VlrPagarCop_dp                               |  |
+    |  |  Calcular diferencia = |suma_hoc - vlr_cop|           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI diferencia <= tolerancia:                         |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI diferencia > tolerancia:                          |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+        - Tolerancia: Tolerancia para comparacion (default: 500)
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "OK. Total:X"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    1. ClaseDePedido contiene: ZPCN, ZPPA o 42
+    2. Moneda contiene: USD
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    Valor a Pagar COP:
+        - Suma todos los valores PorCalcular_hoc (separados por |)
+        - Compara contra VlrPagarCop_dp
+        - Tolerancia por defecto: $500 COP
+        
+    Si diferencia > tolerancia:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO (si forma_pago = 1/01)
+        - Observacion: "No se encuentra coincidencia del Valor a pagar COP..."
+
+================================================================================
+TABLAS ACTUALIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "Tolerancia": 500
+    }))
+    
+    # Ejecutar funcion
+    ZPCN_ZPPA_ValidarUSD()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Valores separados por | se suman individualmente
+    - Observaciones se truncan a 3900 caracteres
+    - Errores por registro no detienen el proceso
+    - Commit se realiza por cada registro con novedad
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarUSD():
     import json, ast, traceback, pyodbc, pandas as pd, numpy as np
     from datetime import datetime

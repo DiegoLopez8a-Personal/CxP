@@ -1,3 +1,169 @@
+"""
+================================================================================
+SCRIPT: ZPCN_ZPPA_ValidarTRM.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida la Tasa Representativa del Mercado (TRM) para pedidos ZPCN/ZPPA/42
+    con moneda USD. Compara el CalculationRate del XML de factura contra el
+    TRM registrado en el historico de ordenes de compra de SAP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |              ZPCN_ZPPA_ValidarTRM()                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion desde vLocDicConfig                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Filtrar registros:                                         |
+    |  - ClaseDePedido contiene ZPCN, ZPPA o 42                   |
+    |  - Moneda contiene USD                                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Obtener CalculationRate_dp (XML)                     |  |
+    |  |  Obtener primer valor de Trm_hoc (SAP)                |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI |TRM_dp - TRM_hoc| > 0 (diferente):               |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  |    -> Actualizar HistoricoOrdenesCompra               |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI TRM_dp == TRM_hoc:                                |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "Proceso OK. Total:X Aprobados:Y ConNovedad:Z"
+
+    vLocDicEstadisticas : str
+        Diccionario de estadisticas
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    1. ClaseDePedido contiene: ZPCN, ZPPA o 42
+    2. Moneda contiene: USD
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    TRM (Tasa Representativa del Mercado):
+        - CalculationRate_dp (XML) - valor numerico
+        - Trm_hoc (SAP) - se toma el PRIMER valor (si hay multiples)
+        - Comparacion: valores deben ser IGUALES
+        
+    Si TRM_dp != TRM_hoc:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No se encuentra coincidencia en el campo TRM..."
+
+================================================================================
+TABLAS ACTUALIZADAS (Cuando hay novedad)
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+    [CxP].[HistoricoOrdenesCompra]
+        - Marca = 'PROCESADO'
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy"
+    }))
+    
+    # Ejecutar funcion
+    ZPCN_ZPPA_ValidarTRM()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Solo se compara contra el PRIMER valor de Trm_hoc
+    - Comparacion es exacta (diferencia > 0 = novedad)
+    - Actualiza HistoricoOrdenesCompra con Marca = 'PROCESADO'
+    - Observaciones se truncan a 3900 caracteres
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarTRM():
     import json
     import ast

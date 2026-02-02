@@ -1,3 +1,326 @@
+/*
+================================================================================
+STORED PROCEDURE: [CxP].[HU4_I_NumLiquidacion_50]
+================================================================================
+
+Descripcion General:
+--------------------
+    Procesa documentos con numero de liquidacion que comienza con '50'
+    (Comercializados). Copia los archivos de insumo a una carpeta especifica
+    y marca los documentos como CON NOVEDAD - COMERCIALIZADOS.
+    
+    Implementa el patron QUEUE/FINALIZE para operaciones de archivos:
+    - QUEUE: Obtiene lista de archivos a copiar y genera BatchId
+    - FINALIZE: Recibe resultados de la copia y actualiza estados
+    
+    A diferencia del Punto H (que mueve archivos), este SP COPIA archivos.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Base de Datos: NotificationsPaddy
+Schema: CxP
+
+================================================================================
+PATRON QUEUE/FINALIZE
+================================================================================
+
+Este SP implementa un patron de dos fases para operaciones de archivos:
+
+FASE 1 - QUEUE:
+    1. Identifica documentos con numero liquidacion '50%' y estado CON NOVEDAD
+    2. Crea registros en tabla de cola [HU4_Punto_I_FileOpsQueue]
+    3. Genera BatchId unico para el lote
+    4. Retorna lista de archivos a copiar con rutas origen y destino
+
+FASE 2 - FINALIZE:
+    1. Recibe BatchId y JSON con resultados de la copia
+    2. Actualiza estado de la cola (OK/FAIL)
+    3. Actualiza DocumentsProcessing con observaciones
+    4. Actualiza Comparativa
+    5. Inserta en ReporteNovedades
+
+El proceso externo (Python) ejecuta la copia fisica de archivos
+entre las dos fases.
+
+================================================================================
+DIAGRAMA DE FLUJO - MODO QUEUE
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                   MODO = 'QUEUE'                            |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Validar parametros y tablas requeridas                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Crear tabla [HU4_Punto_I_FileOpsQueue] si no existe        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Limpiar cola: DELETE FROM [HU4_Punto_I_FileOpsQueue]       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Buscar candidatos en DocumentsProcessing:                  |
+    |  - numero_liquidacion LIKE '50%'                            |
+    |  - ResultadoFinalAntesEventos = 'CON NOVEDAD'               |
+    |  - Dentro de @DiasMaximos                                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Insertar en cola con:                                      |
+    |  - BatchId = NEWID()                                        |
+    |  - Operacion = 'COPY'                                       |
+    |  - Accion = 'CON_NOVEDAD_COMERCIALIZADOS'                   |
+    |  - CarpetaDestino = carpeta COMERCIALIZADOS                 |
+    |  - Estado = 'PENDIENTE'                                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar lista de archivos a copiar:                       |
+    |  - BatchId, ID_registro, executionNum                       |
+    |  - NombreArchivo, RutaOrigenFull, CarpetaDestino            |
+    |  (Solo registros con TieneInsumos = 1)                      |
+    +-------------------------------------------------------------+
+
+================================================================================
+DIAGRAMA DE FLUJO - MODO FINALIZE
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                  MODO = 'FINALIZE'                          |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Validar @BatchId (requerido)                               |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Parsear @ResultadosJson con OPENJSON                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar cola: Estado = 'OK' o 'FAIL'                    |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Construir mensajes segun resultado:                        |
+    |  - Exitoso: "Factura corresponde a COMERCIALIZADOS"         |
+    |  - Fallido: "...No se logran mover insumos..."              |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar DocumentsProcessing:                            |
+    |  - ResultadoFinalAntesEventos = 'CON NOVEDAD - COMERCIALIZADOS'
+    |  - EstadoFinalFase_4 = 'Exitoso'                            |
+    |  - ObservacionesFase_4 con mensaje                          |
+    |  - RutaArchivo (si copia exitosa)                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar Comparativa y ReporteNovedades                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar resumen:                                          |
+    |  BatchId, IDsFinalizados, OK, FAIL, RegistrosReporte        |
+    +-------------------------------------------------------------+
+
+================================================================================
+PARAMETROS
+================================================================================
+
+    @Modo VARCHAR(10) = 'QUEUE'
+        Modo de operacion: 'QUEUE' o 'FINALIZE'
+        
+    @executionNum INT = NULL
+        Numero de ejecucion para filtrar (opcional)
+        
+    @BatchId UNIQUEIDENTIFIER = NULL
+        ID del lote (requerido en FINALIZE)
+        
+    @DiasMaximos INT = 120
+        Dias maximos desde la fecha de retoma
+        
+    @UseBogotaTime BIT = 0
+        Usar hora de Bogota en lugar de hora del servidor
+        
+    @BatchSize INT = 500
+        Cantidad maxima de documentos a procesar
+        
+    @ResultadosJson NVARCHAR(MAX) = NULL
+        JSON con resultados de la copia (usado en FINALIZE)
+
+================================================================================
+CRITERIOS DE SELECCION
+================================================================================
+
+Un documento es candidato para Punto I si cumple:
+
+    1. numero_de_liquidacion_u_orden_de_compra LIKE '50%'
+       - El numero de liquidacion comienza con 50
+       
+    2. ResultadoFinalAntesEventos = 'CON NOVEDAD'
+       - Ya fue procesado y tiene novedad
+       
+    3. Fecha de retoma dentro de @DiasMaximos
+       - O fecha de retoma es NULL
+       
+    4. TieneInsumos = 1 (para retornar archivos)
+       - RutaArchivo no vacia
+       - actualizacionNombreArchivos no vacio
+
+================================================================================
+DIFERENCIAS CON PUNTO H
+================================================================================
+
+    Punto H (Agrupacion):
+        - Criterio: agrupacion MAPG o MAPM
+        - Operacion: MOVE (mover archivos)
+        - Estado final: EXCLUIDO GRANOS / EXCLUIDO MAIZ
+        
+    Punto I (NumLiquidacion_50):
+        - Criterio: numero_liquidacion LIKE '50%'
+        - Operacion: COPY (copiar archivos)
+        - Estado final: CON NOVEDAD - COMERCIALIZADOS
+
+================================================================================
+CARPETA DESTINO
+================================================================================
+
+Ruta fija:
+    \\172.16.250.222\BOT_Validacion_FV_NC_ND_CXP\COMERCIALIZADOS\INSUMO
+
+================================================================================
+TABLA DE COLA: [CxP].[HU4_Punto_I_FileOpsQueue]
+================================================================================
+
+Estructura:
+    QueueId             BIGINT IDENTITY     - ID unico de cola
+    BatchId             UNIQUEIDENTIFIER    - ID del lote
+    ID_registro         BIGINT              - ID del documento
+    executionNum        INT                 - Numero de ejecucion
+    Operacion           VARCHAR(10)         - 'COPY'
+    RutaOrigen          NVARCHAR(4000)      - Carpeta origen
+    NombresArchivos     NVARCHAR(4000)      - Archivos separados por ;
+    Accion              NVARCHAR(50)        - CON_NOVEDAD_COMERCIALIZADOS
+    CarpetaDestino      NVARCHAR(4000)      - Carpeta destino
+    Estado              VARCHAR(20)         - PENDIENTE/OK/FAIL
+    NuevaRutaArchivo    NVARCHAR(4000)      - Ruta despues de copiar
+    ErrorMsg            NVARCHAR(4000)      - Mensaje de error
+    FechaCreacion       DATETIME2(3)        - Fecha de creacion
+    FechaActualizacion  DATETIME2(3)        - Fecha de actualizacion
+
+================================================================================
+RESULTSETS DE SALIDA
+================================================================================
+
+MODO QUEUE - Retorna lista de archivos:
+---------------------------------------
+    BatchId             UNIQUEIDENTIFIER
+    ID_registro         BIGINT
+    executionNum        INT
+    Operacion           VARCHAR
+    Accion              NVARCHAR
+    CarpetaDestino      NVARCHAR
+    NombreArchivo       NVARCHAR
+    RutaOrigenFull      NVARCHAR
+
+    NOTA: Solo retorna registros donde TieneInsumos = 1
+
+MODO FINALIZE - Retorna resumen:
+--------------------------------
+    BatchId                     UNIQUEIDENTIFIER
+    IDsFinalizados              INT
+    OK                          INT
+    FAIL                        INT
+    RegistrosReporteNovedades   INT
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+-- Ejemplo 1: Ejecutar QUEUE
+EXEC [CxP].[HU4_I_NumLiquidacion_50]
+    @Modo = 'QUEUE',
+    @DiasMaximos = 120,
+    @BatchSize = 500;
+
+-- Ejemplo 2: Ejecutar FINALIZE con resultados
+DECLARE @Resultados NVARCHAR(MAX) = '[
+    {"ID_registro":"123","MovimientoExitoso":"true","NuevaRutaArchivo":"\\\\server\\path","ErrorMsg":""},
+    {"ID_registro":"124","MovimientoExitoso":"false","NuevaRutaArchivo":"","ErrorMsg":"Error"}
+]';
+
+EXEC [CxP].[HU4_I_NumLiquidacion_50]
+    @Modo = 'FINALIZE',
+    @BatchId = 'B2C3D4E5-F6A7-8901-BCDE-F23456789012',
+    @ResultadosJson = @Resultados;
+
+-- Ejemplo 3: Ver candidatos antes de ejecutar
+SELECT 
+    ID,
+    numero_de_liquidacion_u_orden_de_compra,
+    ResultadoFinalAntesEventos,
+    RutaArchivo,
+    actualizacionNombreArchivos
+FROM [CxP].[DocumentsProcessing]
+WHERE numero_de_liquidacion_u_orden_de_compra LIKE '50%'
+  AND ResultadoFinalAntesEventos = 'CON NOVEDAD';
+
+================================================================================
+INTEGRACION CON SCRIPTS PYTHON
+================================================================================
+
+Scripts relacionados:
+    - ejecutar_HU4_I_NumLiquidacion_50_QUEUE.py
+    - ejecutar_HU4_I_NumLiquidacion_50_FINALIZE.py
+    - ejecutar_FileOps_PuntoI_COPIAR.py
+
+Flujo tipico:
+    1. Python ejecuta SP en modo QUEUE
+    2. Python recibe lista de archivos
+    3. Python copia archivos fisicamente (shutil.copy2)
+    4. Python ejecuta SP en modo FINALIZE con resultados JSON
+
+================================================================================
+MANEJO DE ERRORES
+================================================================================
+
+    - Errores de parametros: RAISERROR con mensaje descriptivo
+    - Errores en QUEUE: ROLLBACK y RAISERROR
+    - Errores en FINALIZE: ROLLBACK y RAISERROR
+    - Modo invalido: RAISERROR "Modo invalido. Use QUEUE o FINALIZE."
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - La cola se limpia completamente en cada QUEUE (DELETE con TABLOCK)
+    - STRING_SPLIT se usa para separar archivos por punto y coma
+    - OPENJSON se usa para parsear resultados en FINALIZE
+    - TieneInsumos filtra solo registros con archivos validos
+    - Las observaciones se concatenan (no se sobrescriben)
+    - El indice UX_HU4_Punto_I_ID_Pendiente evita duplicados pendientes
+
+================================================================================
+*/
+
 USE [NotificationsPaddy]
 GO
 /****** Object:  StoredProcedure [CxP].[HU4_I_NumLiquidacion_50]    Script Date: 01/02/2026 4:41:31 ******/

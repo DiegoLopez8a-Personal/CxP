@@ -1,3 +1,172 @@
+"""
+================================================================================
+SCRIPT: ZPCN_ZPPA_ValidarCOP.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida el valor total de factura para pedidos ZPCN/ZPPA/42 con moneda COP.
+    Compara la suma de valores PorCalcular del historico de ordenes de compra
+    contra el valor de compra LEA del XML de factura.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |              ZPCN_ZPPA_ValidarCOP()                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion desde vLocDicConfig                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Filtrar registros:                                         |
+    |  - ClaseDePedido contiene ZPCN, ZPPA o 42                   |
+    |  - Moneda contiene COP o esta vacia                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Sumar PorCalcular_hoc (SAP)                          |  |
+    |  |  Sumar Valor de la Compra LEA_ddp (XML)               |  |
+    |  |  Calcular diferencia absoluta                         |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI diferencia > tolerancia ($500):                   |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa (Valor = NO)             |  |
+    |  |    -> Actualizar HistoricoOrdenesCompra               |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI diferencia <= tolerancia:                         |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "Proceso OK. Total:X Aprobados:Y ConNovedad:Z"
+
+    vLocDicEstadisticas : str
+        Diccionario de estadisticas
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    1. ClaseDePedido contiene: ZPCN, ZPPA o 42
+    2. Moneda contiene: COP o esta vacia (asume COP por defecto)
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    Valor Total de Factura:
+        - Suma de PorCalcular_hoc (SAP) - valores separados por |
+        - Suma de "Valor de la Compra LEA_ddp" (XML)
+        - Tolerancia: $500 COP
+        
+    Si diferencia > tolerancia:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No se encuentra coincidencia en el valor total..."
+        - Item 'Valor' en Comparativa = Aprobado: 'NO'
+
+================================================================================
+TABLAS ACTUALIZADAS (Cuando hay novedad)
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Aprobado = 'NO' (Item = 'Valor')
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+    [CxP].[HistoricoOrdenesCompra]
+        - Marca = 'PROCESADO'
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy"
+    }))
+    
+    # Ejecutar funcion
+    ZPCN_ZPPA_ValidarCOP()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Tolerancia fija de $500 COP
+    - Crea items 'Valor' y 'Observaciones' si no existen (verificar_y_crear_item)
+    - Valores se suman individualmente (puede haber multiples posiciones)
+    - Observaciones se truncan a 3900 caracteres
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarCOP():
     import json
     import ast

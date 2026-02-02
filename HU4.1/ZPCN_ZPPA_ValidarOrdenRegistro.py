@@ -1,3 +1,163 @@
+"""
+================================================================================
+SCRIPT: ZPCN_ZPPA_ValidarOrdenRegistro.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida el numero de orden de registro para pedidos ZPCN/ZPPA/42.
+    Verifica que el numero de orden de compra del documento coincida
+    con el numero registrado en el historico de ordenes de compra de SAP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |         ZPCN_ZPPA_ValidarOrdenRegistro()                    |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion desde vLocDicConfig                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    |  Filtrar: ClaseDePedido = ZPCN, ZPPA o 42                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Obtener numero_de_liquidacion_u_orden_de_compra_dp   |  |
+    |  |  Obtener NumOC_hoc del historico                      |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Comparar ordenes de compra                           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI coinciden:                                        |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI no coinciden:                                     |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  |    -> Actualizar HistoricoOrdenesCompra               |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        "Proceso OK. Total:X Aprobados:Y ConNovedad:Z"
+
+    vLocDicEstadisticas : str
+        Diccionario con estadisticas detalladas
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    ClaseDePedido contiene: ZPCN, ZPPA o 42
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    Orden de Registro:
+        - numero_de_liquidacion_u_orden_de_compra_dp (documento)
+        - NumOC_hoc (historico SAP)
+        - Comparacion exacta de valores
+        
+    Si no coinciden:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No coincide numero de orden de registro"
+
+================================================================================
+TABLAS ACTUALIZADAS (Cuando hay novedad)
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+    [CxP].[HistoricoOrdenesCompra]
+        - Marca = 'PROCESADO'
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy"
+    }))
+    
+    # Ejecutar funcion
+    ZPCN_ZPPA_ValidarOrdenRegistro()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Comparacion exacta de numeros de orden
+    - Observaciones se truncan a 3900 caracteres
+    - Actualiza HistoricoOrdenesCompra con Marca = 'PROCESADO'
+    - Errores por registro no detienen el proceso
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarOrdenRegistro():
     import json
     import ast

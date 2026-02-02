@@ -1,3 +1,148 @@
+"""
+================================================================================
+SCRIPT: ZPCN_ZPPA_ValidarElementoPEP.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida campos para pedidos ZPCN/ZPPA/42 que tienen Elemento PEP.
+    Verifica IndicadorImpuestos, CentroDeCoste, Cuenta y Emplazamiento
+    segun reglas especificas para pedidos con estructura PEP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |          ZPCN_ZPPA_ValidarElementoPEP()                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    |  Filtrar: ClaseDePedido = ZPCN, ZPPA o 42                   |
+    |  Filtrar: ElementoPEP tiene valor                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro con ElementoPEP:                        |
+    |  +-------------------------------------------------------+  |
+    |  |  1. Validar IndicadorImpuestos                        |  |
+    |  |     - Valores validos: H4, H5, H6, H7, VP, CO, IC, CR |  |
+    |  +-------------------------------------------------------+  |
+    |  |  2. Validar CentroDeCoste                             |  |
+    |  |     - Debe estar VACIO para pedidos con PEP           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  3. Validar Cuenta                                    |  |
+    |  |     - Debe ser '5199150001'                           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  4. Validar Emplazamiento segun IndicadorImpuestos    |  |
+    |  |     - H4/H5 -> DCTO_01                                |  |
+    |  |     - H6/H7 -> GTO_02                                 |  |
+    |  |     - VP/CO/CR/IC -> DCTO_01 o GTO_02                 |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+REGLAS DE VALIDACION - ELEMENTO PEP
+================================================================================
+
+    1. Indicador Impuestos:
+       - Valores permitidos: H4, H5, H6, H7, VP, CO, IC, CR
+       - Si vacio o valor no permitido -> CON NOVEDAD
+       
+    2. Centro de Coste:
+       - Para pedidos con Elemento PEP, debe estar VACIO
+       - Si tiene valor -> CON NOVEDAD
+       
+    3. Cuenta:
+       - Debe ser exactamente '5199150001'
+       - Si diferente -> CON NOVEDAD
+       
+    4. Emplazamiento:
+       - Segun IndicadorImpuestos:
+         * H4, H5 -> debe ser 'DCTO_01'
+         * H6, H7 -> debe ser 'GTO_02'
+         * VP, CO, CR, IC -> puede ser 'DCTO_01' o 'GTO_02'
+       - Si vacio o incorrecto -> CON NOVEDAD
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "Proceso OK. Total:X Posiciones:Y OK:Z Novedad:W"
+
+    vLocDicEstadisticas : str
+        Diccionario detallado
+
+================================================================================
+TABLAS ACTUALIZADAS (Cuando hay novedad)
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4
+        - ObservacionesFase_4
+        - ResultadoFinalAntesEventos
+
+    [dbo].[CxP.Comparativa]
+        - Aprobado (por Item)
+        - Valor_XML (Observaciones)
+        - Estado_validacion_antes_de_eventos
+
+    [CxP].[HistoricoOrdenesCompra]
+        - Marca = 'PROCESADO'
+
+================================================================================
+EJEMPLOS DE OBSERVACIONES
+================================================================================
+
+    - "Pedido corresponde a ZPCN o ZPPA con Elemento PEP, pero campo 
+       'Indicador impuestos' NO se encuentra diligenciado"
+       
+    - "Pedido corresponde a ZPCN o ZPPA con Elemento PEP, pero Campo 
+       'Centro de coste' se encuentra diligenciado cuando NO debe estarlo"
+       
+    - "Pedido corresponde a ZPCN o ZPPA con Elemento PEP, pero Campo 
+       'Cuenta' es diferente a 5199150001"
+       
+    - "Pedido corresponde a ZPCN o ZPPA y cuenta con Elemento PEP, pero 
+       Campo 'Emplazamiento' NO se encuentra aplicado correctamente..."
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Solo procesa registros donde ElementoPEP tiene valor
+    - Procesa posicion por posicion
+    - Crea items en Comparativa si no existen
+    - Observaciones se truncan a 3900 caracteres
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarElementoPEP():
     import json
     import ast

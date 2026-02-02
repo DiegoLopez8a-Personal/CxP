@@ -1,3 +1,316 @@
+/*
+================================================================================
+STORED PROCEDURE: [CxP].[HU4_H_Agrupacion]
+================================================================================
+
+Descripcion General:
+--------------------
+    Procesa documentos con agrupacion MAPG (Materia Prima Granos) o 
+    MAPM (Materia Prima Maiz). Mueve los archivos de insumo a carpetas
+    especificas y marca los documentos como EXCLUIDO GRANOS o EXCLUIDO MAIZ.
+    
+    Implementa el patron QUEUE/FINALIZE para operaciones de archivos:
+    - QUEUE: Obtiene lista de archivos a mover y genera BatchId
+    - FINALIZE: Recibe resultados del movimiento y actualiza estados
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Base de Datos: NotificationsPaddy
+Schema: CxP
+
+================================================================================
+PATRON QUEUE/FINALIZE
+================================================================================
+
+Este SP implementa un patron de dos fases para operaciones de archivos:
+
+FASE 1 - QUEUE:
+    1. Identifica documentos con agrupacion MAPG o MAPM
+    2. Crea registros en tabla de cola [HU4_Punto_H_FileOpsQueue]
+    3. Genera BatchId unico para el lote
+    4. Retorna lista de archivos a mover con rutas origen y destino
+
+FASE 2 - FINALIZE:
+    1. Recibe BatchId y JSON con resultados del movimiento
+    2. Actualiza estado de la cola (OK/FAIL)
+    3. Actualiza DocumentsProcessing con observaciones
+    4. Actualiza Comparativa
+    5. Inserta en ReporteNovedades
+
+El proceso externo (Python) ejecuta el movimiento fisico de archivos
+entre las dos fases.
+
+================================================================================
+DIAGRAMA DE FLUJO - MODO QUEUE
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                   MODO = 'QUEUE'                            |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Validar parametros y tablas requeridas                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Crear tabla [HU4_Punto_H_FileOpsQueue] si no existe        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Limpiar cola: DELETE FROM [HU4_Punto_H_FileOpsQueue]       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Buscar candidatos en DocumentsProcessing:                  |
+    |  - agrupacion contiene MAPG o MAPM                          |
+    |  - RutaArchivo no vacia                                     |
+    |  - actualizacionNombreArchivos no vacio                     |
+    |  - Dentro de @DiasMaximos                                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Insertar en cola con:                                      |
+    |  - BatchId = NEWID()                                        |
+    |  - Operacion = 'MOVE'                                       |
+    |  - Accion = 'EXCLUIDO GRANOS' o 'EXCLUIDO MAIZ'             |
+    |  - CarpetaDestino segun agrupacion                          |
+    |  - Estado = 'PENDIENTE'                                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar lista de archivos a mover:                        |
+    |  - BatchId, ID_registro, executionNum                       |
+    |  - NombreArchivo, RutaOrigenFull, CarpetaDestino            |
+    +-------------------------------------------------------------+
+
+================================================================================
+DIAGRAMA DE FLUJO - MODO FINALIZE
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                  MODO = 'FINALIZE'                          |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Validar @BatchId (requerido)                               |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Parsear @ResultadosJson con OPENJSON:                      |
+    |  - ID_registro, MovimientoExitoso                           |
+    |  - NuevaRutaArchivo, ErrorMsg                               |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar cola:                                           |
+    |  - Estado = 'OK' o 'FAIL'                                   |
+    |  - NuevaRutaArchivo, ErrorMsg                               |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Construir mensajes segun resultado:                        |
+    |  - MAPG exitoso: "Factura excluida corresponde a MAPG"      |
+    |  - MAPG fallido: "...No se logran mover insumos..."         |
+    |  - MAPM exitoso: "Factura excluida corresponde a MAPM"      |
+    |  - MAPM fallido: "...No se logran mover insumos..."         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar DocumentsProcessing:                            |
+    |  - EstadoFinalFase_4, ObservacionesFase_4                   |
+    |  - ResultadoFinalAntesEventos                               |
+    |  - RutaArchivo (si movimiento exitoso)                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar Comparativa y ReporteNovedades                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar resumen: BatchId, OK, FAIL, RegistrosReporte      |
+    +-------------------------------------------------------------+
+
+================================================================================
+PARAMETROS
+================================================================================
+
+    @Modo VARCHAR(10) = 'QUEUE'
+        Modo de operacion: 'QUEUE' o 'FINALIZE'
+        
+    @executionNum INT = NULL
+        Numero de ejecucion para filtrar (opcional)
+        
+    @BatchId UNIQUEIDENTIFIER = NULL
+        ID del lote (requerido en FINALIZE)
+        
+    @DiasMaximos INT = 120
+        Dias maximos desde la fecha de retoma
+        
+    @UseBogotaTime BIT = 0
+        Usar hora de Bogota en lugar de hora del servidor
+        
+    @BatchSize INT = 500
+        Cantidad maxima de documentos a procesar
+        
+    @ResultadosJson NVARCHAR(MAX) = NULL
+        JSON con resultados del movimiento (usado en FINALIZE)
+
+================================================================================
+ESTRUCTURA DEL JSON DE RESULTADOS
+================================================================================
+
+El parametro @ResultadosJson debe tener esta estructura:
+
+    [
+        {
+            "ID_registro": "12345",
+            "MovimientoExitoso": "true",
+            "NuevaRutaArchivo": "\\\\servidor\\carpeta\\",
+            "ErrorMsg": ""
+        },
+        {
+            "ID_registro": "12346",
+            "MovimientoExitoso": "false",
+            "NuevaRutaArchivo": "",
+            "ErrorMsg": "Archivo no encontrado"
+        }
+    ]
+
+Valores aceptados para MovimientoExitoso:
+    - true, 1, si, yes, y  -> Exito
+    - false, 0, no         -> Fallo
+
+================================================================================
+CARPETAS DESTINO
+================================================================================
+
+Ruta base: \\172.16.250.222\BOT_Validacion_FV_NC_ND_CXP\
+
+    MAPG (Granos):
+        \\172.16.250.222\BOT_Validacion_FV_NC_ND_CXP\MATERIA PRIMA GRANOS\INSUMO
+        
+    MAPM (Maiz):
+        \\172.16.250.222\BOT_Validacion_FV_NC_ND_CXP\MATERIA PRIMA MAIZ\INSUMO
+
+================================================================================
+TABLA DE COLA: [CxP].[HU4_Punto_H_FileOpsQueue]
+================================================================================
+
+Estructura:
+    QueueId             BIGINT IDENTITY     - ID unico de cola
+    BatchId             UNIQUEIDENTIFIER    - ID del lote
+    ID_registro         BIGINT              - ID del documento
+    executionNum        INT                 - Numero de ejecucion
+    Operacion           VARCHAR(10)         - 'MOVE'
+    RutaOrigen          NVARCHAR(4000)      - Carpeta origen
+    NombresArchivos     NVARCHAR(4000)      - Archivos separados por ;
+    Accion              NVARCHAR(30)        - EXCLUIDO GRANOS/MAIZ
+    CarpetaDestino      NVARCHAR(4000)      - Carpeta destino
+    Estado              VARCHAR(20)         - PENDIENTE/OK/FAIL
+    NuevaRutaArchivo    NVARCHAR(4000)      - Ruta despues de mover
+    ErrorMsg            NVARCHAR(4000)      - Mensaje de error
+    FechaCreacion       DATETIME2(3)        - Fecha de creacion
+    FechaActualizacion  DATETIME2(3)        - Fecha de actualizacion
+
+================================================================================
+RESULTSETS DE SALIDA
+================================================================================
+
+MODO QUEUE - Retorna lista de archivos:
+---------------------------------------
+    BatchId             UNIQUEIDENTIFIER
+    ID_registro         BIGINT
+    executionNum        INT
+    Operacion           VARCHAR
+    Accion              NVARCHAR
+    CarpetaDestino      NVARCHAR
+    NombreArchivo       NVARCHAR
+    RutaOrigenFull      NVARCHAR
+
+MODO FINALIZE - Retorna resumen:
+--------------------------------
+    BatchId                     UNIQUEIDENTIFIER
+    OK                          INT
+    FAIL                        INT
+    RegistrosReporteNovedades   INT
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+-- Ejemplo 1: Ejecutar QUEUE
+EXEC [CxP].[HU4_H_Agrupacion]
+    @Modo = 'QUEUE',
+    @DiasMaximos = 120,
+    @BatchSize = 500;
+
+-- Ejemplo 2: Ejecutar FINALIZE con resultados
+DECLARE @Resultados NVARCHAR(MAX) = '[
+    {"ID_registro":"123","MovimientoExitoso":"true","NuevaRutaArchivo":"\\\\server\\path","ErrorMsg":""},
+    {"ID_registro":"124","MovimientoExitoso":"false","NuevaRutaArchivo":"","ErrorMsg":"Error"}
+]';
+
+EXEC [CxP].[HU4_H_Agrupacion]
+    @Modo = 'FINALIZE',
+    @BatchId = 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890',
+    @ResultadosJson = @Resultados;
+
+-- Ejemplo 3: QUEUE con executionNum especifico
+EXEC [CxP].[HU4_H_Agrupacion]
+    @Modo = 'QUEUE',
+    @executionNum = 5,
+    @BatchSize = 100;
+
+================================================================================
+INTEGRACION CON SCRIPTS PYTHON
+================================================================================
+
+Scripts relacionados:
+    - ejecutar_HU4_H_Agrupacion_QUEUE.py
+    - ejecutar_HU4_H_Agrupacion_FINALIZE.py
+    - ejecutar_FileOps_PuntoH_MOVER.py
+
+Flujo tipico:
+    1. Python ejecuta SP en modo QUEUE
+    2. Python recibe lista de archivos
+    3. Python mueve archivos fisicamente (shutil.move)
+    4. Python ejecuta SP en modo FINALIZE con resultados JSON
+
+================================================================================
+MANEJO DE ERRORES
+================================================================================
+
+    - Errores de parametros: RAISERROR con mensaje descriptivo
+    - Errores en QUEUE: ROLLBACK y RAISERROR
+    - Errores en FINALIZE: ROLLBACK y RAISERROR
+    - Modo invalido: RAISERROR "Modo invalido. Use QUEUE o FINALIZE."
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - La cola se limpia completamente en cada QUEUE (DELETE con TABLOCK)
+    - STRING_SPLIT se usa para separar archivos por punto y coma
+    - OPENJSON se usa para parsear resultados en FINALIZE
+    - Las observaciones se concatenan (no se sobrescriben)
+    - El indice UX_HU4_Punto_H_ID_Pendiente evita duplicados pendientes
+
+================================================================================
+*/
+
 USE [NotificationsPaddy]
 GO
 /****** Object:  StoredProcedure [CxP].[HU4_H_Agrupacion]    Script Date: 01/02/2026 4:41:05 ******/

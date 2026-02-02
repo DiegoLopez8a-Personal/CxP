@@ -1,3 +1,156 @@
+"""
+================================================================================
+SCRIPT: PostProcesamiento_EstadosFinales.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Realiza el post-procesamiento de estados finales para pedidos ZPRE/ZPPA/ZPCN/45/42.
+    Asigna estados definitivos (APROBADO, APROBADO CONTADO, APROBADO SIN CONTABILIZACION)
+    basandose en la clase de pedido, forma de pago y resultados de validaciones previas.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |        PostProcesamiento_EstadosFinales()                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                                                    |
+    |  Filtrar: 'ZPRE', 'ZPPA', 'ZPCN', 'ZVEN', 'ZPSA', 'ZPSS', 'ZPAF', 'ZPSA'                        |
+    +-----------------------------+-------------------------------------------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Obtener: ClaseDePedido, forma_de_pago, estados       |  |
+    |  +-------------------------------------------------------+  |
+    |                            |                                |
+    |     +----------------------+----------------------+         |
+    |     |                      |                      |         |
+    |     v                      v                      v         |
+    |  Clase 31?            Contado?              Credito?        |
+    |  (Servicios)          (01/1)                (otros)         |
+    |     |                      |                      |         |
+    |     v                      v                      v         |
+    |  CON NOVEDAD        APROBADO             APROBADO          |
+    |  + Obs especial     CONTADO              (normal)          |
+    |  o APROBADO SIN                                            |
+    |  CONTABILIZACION                                           |
+    +-------------------------------------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Actualizar DocumentsProcessing, Comparativa, HOC           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+REGLAS DE ESTADOS FINALES
+================================================================================
+
+    CASO 1 - Clase de Pedido 31 (Servicios):
+    
+        SI tiene CON NOVEDAD previo:
+            -> Mantiene CON NOVEDAD + observacion especial
+            
+        SI NO tiene novedad:
+            -> APROBADO SIN CONTABILIZACION
+            -> Observacion: "Pedido corresponde a Servicios (Clase 31)"
+    
+    CASO 2 - Forma de pago CONTADO (01 o 1):
+    
+        -> APROBADO CONTADO
+        -> Marca HOC como 'PROCESADO'
+    
+    CASO 3 - Forma de pago CREDITO (otros):
+    
+        -> APROBADO
+        -> Marca HOC como 'PROCESADO'
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        "Post-procesamiento OK. Total:X Clase31:Y Contado:Z Aprobado:W"
+
+    vLocDicEstadisticas : str
+        Diccionario con:
+        - total_registros
+        - con_novedad_clase31
+        - aprobado_sin_contab
+        - aprobado_contado
+        - aprobado
+        - errores
+
+================================================================================
+TABLAS ACTUALIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 (si aplica)
+        - ResultadoFinalAntesEventos
+
+    [dbo].[CxP.Comparativa]
+        - Estado_validacion_antes_de_eventos
+
+    [CxP].[HistoricoOrdenesCompra]
+        - Marca = 'PROCESADO'
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy"
+    }))
+    
+    # Ejecutar funcion
+    PostProcesamiento_EstadosFinales()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Se ejecuta DESPUES de todas las validaciones especificas
+    - Solo procesa registros que pasaron validaciones previas
+    - Clase 31 tiene tratamiento especial (sin contabilizacion)
+    - Actualiza multiples posiciones de HOC por registro
+
+================================================================================
+"""
+
 def PostProcesamiento_EstadosFinales():
     import json
     import ast
@@ -159,7 +312,7 @@ def PostProcesamiento_EstadosFinales():
             print("[PASO 1] Consultando HU41_CandidatosValidacion...")
             
             # FILTRO MODIFICABLE: Filtrar por clases de pedido
-            clases_pedido_filtro = ['ZPRE', 'ZPPA', 'ZPCN', '45', '42']
+            clases_pedido_filtro = ['ZPRE', 'ZPPA', 'ZPCN', 'ZVEN', 'ZPSA', 'ZPSS', 'ZPAF', 'ZPSA']
             
             query_candidatos = """
             SELECT 

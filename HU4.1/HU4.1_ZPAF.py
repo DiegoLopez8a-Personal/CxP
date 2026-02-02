@@ -1,3 +1,196 @@
+"""
+================================================================================
+SCRIPT: HU4_1_ZPAF.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida pedidos de Activos Fijos (Clases ZPAF o 41) en el sistema de
+    Cuentas por Pagar. Ejecuta validaciones financieras y de datos maestros
+    especificas para este tipo de pedido, incluyendo formato de activo fijo,
+    indicadores de impuestos, criterios de clasificacion y cuenta contable.
+
+Autor: Equipo de Desarrollo RPA
+Version: 1.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |             ZPAF_ValidarActivosFijos()                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  1. Cargar configuracion desde vLocDicConfig                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  2. Conectar a base de datos SQL Server                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  3. Consultar [CxP].[HU41_CandidatosValidacion]             |
+    |     Filtrar: ClaseDePedido = ZPAF o 41                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  4. Para cada registro:                                     |
+    |  +-------------------------------------------------------+  |
+    |  |  a. Validar Montos (valor XML vs suma SAP)            |  |
+    |  +-------------------------------------------------------+  |
+    |  |  b. Validar TRM (si USD)                              |  |
+    |  +-------------------------------------------------------+  |
+    |  |  c. Validar Nombre Emisor                             |  |
+    |  +-------------------------------------------------------+  |
+    |  |  d. Validar Activo Fijo (formato 9 digitos)           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  e. Validar Capitalizado (debe estar vacio)           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  f. Validar Indicador Impuestos (H4/H5/H6/H7/VP)      |  |
+    |  +-------------------------------------------------------+  |
+    |  |  g. Validar Criterio Clasif. 2                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  h. Validar Cuenta (debe ser 2695950020)              |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  5. Actualizar resultados en tablas                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  6. Retornar estadisticas a RocketBot                       |
+    +-------------------------------------------------------------+
+
+================================================================================
+REGLAS DE NEGOCIO ZPAF
+================================================================================
+
+    1. Activo Fijo:
+       - Debe tener exactamente 9 digitos numericos
+       - Patron regex: ^\d{9}$
+       
+    2. Capitalizado el:
+       - NUNCA debe estar diligenciado (siempre vacio)
+       
+    3. Indicador Impuestos:
+       - Grupo 1 (Productores): H4, H5, VP
+       - Grupo 2 (No Productores): H6, H7, VP
+       - No se permite mezclar indicadores de ambos grupos
+       
+    4. Criterio Clasif. 2:
+       - H4/H5 -> debe ser '0001'
+       - H6/H7 -> debe ser '0000'
+       - VP -> puede ser '0001' o '0000'
+       
+    5. Cuenta:
+       - Debe ser estrictamente '2695950020'
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+        - UsuarioBaseDatos: Usuario SQL (opcional)
+        - ClaveBaseDatos: Contrasena SQL (opcional)
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error critico
+
+    vLocStrResumenSP : str
+        "Procesados X registros ZPAF/41. Exitosos: Y, Con novedad: Z"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error critico
+
+    vGblStrSystemError : str
+        "ErrorHU4_4.1" en caso de error
+
+================================================================================
+ESTADOS FINALES POSIBLES
+================================================================================
+
+    - PROCESADO: Validacion exitosa sin novedades
+    - PROCESADO CONTADO: Validacion exitosa, forma de pago contado
+    - CON NOVEDAD: Se encontraron discrepancias
+    - CON NOVEDAD CONTADO: Discrepancias con forma de pago contado
+
+================================================================================
+TABLAS INVOLUCRADAS
+================================================================================
+
+    Lectura:
+        - [CxP].[HU41_CandidatosValidacion]: Candidatos a validar
+        
+    Escritura:
+        - [CxP].[DocumentsProcessing]: Estado y observaciones
+        - [dbo].[CxP.Comparativa]: Trazabilidad de validaciones
+        - [CxP].[HistoricoOrdenesCompra]: Marca de ordenes procesadas
+
+================================================================================
+FUNCIONES DE VALIDACION
+================================================================================
+
+    validar_activo_fijo(valor):
+        Verifica formato de 9 digitos numericos
+        
+    validar_capitalizado(valor):
+        Verifica que este vacio
+        
+    validar_indicador_impuestos(lista_indicadores):
+        Verifica indicadores validos y no mezclados
+        
+    validar_criterio_clasif_2(indicador, criterio):
+        Verifica coherencia segun reglas
+        
+    validar_cuenta_zpaf(cuenta):
+        Verifica que sea 2695950020
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "sqlserver.empresa.com",
+        "NombreBaseDatos": "CxP_Produccion"
+    }))
+    
+    # Ejecutar la validacion
+    ZPAF_ValidarActivosFijos()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")
+    resumen = GetVar("vLocStrResumenSP")
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Errores individuales por registro NO detienen el proceso
+    - Solo errores criticos de infraestructura detienen el bot
+    - Tolerancia para montos: $500 COP
+    - Tolerancia para TRM: 0.01
+    - Observaciones se truncan a 3900 caracteres
+
+================================================================================
+"""
+
 def ZPAF_ValidarActivosFijos():
     """
     Orquesta la validacion de pedidos de Activos Fijos (Clases ZPAF o 41).

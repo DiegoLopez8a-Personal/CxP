@@ -33,6 +33,329 @@
 #     )
 # END
 
+"""
+================================================================================
+SCRIPT: HU4_2_ValidarNC_ND.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Procesa y valida Notas Credito (NC) y Notas Debito (ND) en el sistema de
+    Cuentas por Pagar. Para las NC busca la factura (FV) correspondiente y
+    valida montos y referencias. Para las ND valida datos tributarios del
+    receptor (Diana Corporacion).
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |          HU42_ValidarNotasCreditoDebito()                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  1. Cargar configuracion desde vLocDicConfig                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  2. Conectar a base de datos SQL Server                     |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +=============================================================+
+    |              FASE 1: PROCESAMIENTO NOTAS CREDITO (NC)       |
+    +=============================================================+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  3. Consultar NC pendientes de DocumentsProcessing          |
+    |     Filtro: tipo_de_documento = 'NC'                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  4. Poblar tabla [CxP].[Comparativa_NC] con items           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  5. Para cada NC:                                           |
+    |  +-------------------------------------------------------+  |
+    |  |  a. Extraer referencia de factura del XML             |  |
+    |  |  b. Buscar FV por NIT + numero de factura             |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI encuentra FV:                                     |  |
+    |  |    -> Comparar montos (tolerancia 0.01)               |  |
+    |  |    -> Si coincide: ENCONTRADO                         |  |
+    |  |    -> Si no coincide: CON NOVEDAD                     |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI NO encuentra FV:                                  |  |
+    |  |    -> Buscar por montos similares (3 meses atras)     |  |
+    |  |    -> CON NOVEDAD si no encuentra                     |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  6. Generar reporte Excel de NC con novedades               |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +=============================================================+
+    |              FASE 2: PROCESAMIENTO NOTAS DEBITO (ND)        |
+    +=============================================================+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  7. Consultar ND pendientes de DocumentsProcessing          |
+    |     Filtro: tipo_de_documento = 'ND'                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  8. Poblar tabla [CxP].[Comparativa_ND] con items           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  9. Para cada ND validar datos tributarios:                 |
+    |  +-------------------------------------------------------+  |
+    |  |  - Nombre Emisor (debe tener valor)                   |  |
+    |  |  - NIT Emisor (debe tener valor)                      |  |
+    |  |  - Fecha emision (debe tener valor)                   |  |
+    |  |  - Nombre Receptor (DIANA o DICORP)                   |  |
+    |  |  - NIT Receptor (860031606)                           |  |
+    |  |  - Tipo Persona (31)                                  |  |
+    |  |  - Digito Verificacion (6)                            |  |
+    |  |  - TaxLevelCode (O-13, O-15, O-23, O-47, R-99-PN)     |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  10. Retornar estadisticas a RocketBot                      |
+    +-------------------------------------------------------------+
+
+================================================================================
+TABLAS UTILIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        Tabla principal con documentos electronicos.
+        Filtros: tipo_de_documento IN ('NC', 'ND')
+        
+    [CxP].[Comparativa_NC]
+        Trazabilidad de validaciones de Notas Credito.
+        Estructura:
+            - Fecha_de_ejecucion, Fecha_de_retoma
+            - ID_ejecucion, ID_Registro
+            - NIT, Nombre_Proveedor, Nota_Credito
+            - Item, Valor_XML, Valor_Factura
+            - Aprobado ('SI'/'NO'), Estado
+            
+    [CxP].[Comparativa_ND]
+        Trazabilidad de validaciones de Notas Debito.
+        Estructura:
+            - Fecha_de_ejecucion, ID_ejecucion, ID_Registro
+            - NIT, Nombre_Proveedor, Nota_Debito
+            - Item, Valor_XML
+            - Aprobado ('SI'/'NO'), Estado
+
+================================================================================
+ITEMS VALIDADOS - NOTAS CREDITO (NC)
+================================================================================
+
+    - Nombre Emisor
+    - NIT Emisor
+    - Nombre Receptor
+    - Nit Receptor
+    - Tipo Persona Receptor
+    - DigitoVerificacion Receptor
+    - TaxLevelCode Receptor
+    - Fecha emision del documento
+    - LineExtensionAmount
+    - Tipo de nota credito
+    - Referencia (numero de factura)
+    - Codigo CUFE de la factura
+    - Cude de la Nota Credito
+    - Observaciones
+
+================================================================================
+ITEMS VALIDADOS - NOTAS DEBITO (ND)
+================================================================================
+
+    - Nombre Emisor
+    - NIT Emisor
+    - Nombre Receptor
+    - Nit Receptor
+    - Tipo Persona Receptor
+    - DigitoVerificacion Receptor
+    - TaxLevelCode Receptor
+    - Fecha emision del documento
+    - LineExtensionAmount
+    - Tipo de nota debito
+    - Referencia
+    - Codigo CUFE de la factura
+    - Cude de la Nota Debito
+
+================================================================================
+VALIDACIONES TRIBUTARIAS (ND)
+================================================================================
+
+    Receptor debe ser Diana Corporacion:
+    
+    1. Nombre Receptor:
+       - Debe ser "DIANA CORPORACION SAS" o "DICORP SAS"
+       - Normalizacion: quita tildes, espacios, puntos
+       
+    2. NIT Receptor:
+       - Debe ser exactamente "860031606"
+       
+    3. Tipo Persona:
+       - Debe ser "31" (Persona Juridica)
+       
+    4. Digito Verificacion:
+       - Debe ser "6"
+       
+    5. TaxLevelCode (Responsabilidad Tributaria):
+       - Debe contener: O-13, O-15, O-23, O-47 o R-99-PN
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+        - UsuarioBaseDatos: Usuario SQL (opcional)
+        - ClaveBaseDatos: Contrasena SQL (opcional)
+        - RutaBaseReporteNC: Ruta base para reportes NC
+        - NombreReporteNC: Nombre del archivo de reporte
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error critico
+
+    vLocStrResumenSP : str
+        "Procesamiento Finalizado. NC: X, ND: Y"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error critico
+
+    vGblStrSystemError : str
+        "ErrorHU4_4.1" en caso de error
+
+================================================================================
+ESTADOS FINALES NC
+================================================================================
+
+    - ENCONTRADO: Factura encontrada y montos coinciden
+    - CON NOVEDAD: Factura no encontrada o montos no coinciden
+
+================================================================================
+ESTADOS FINALES ND
+================================================================================
+
+    - EXITOSO: Todas las validaciones tributarias pasaron
+    - CON NOVEDAD: Alguna validacion fallo
+
+================================================================================
+REPORTE EXCEL NC
+================================================================================
+
+    Ubicacion: {RutaBaseReporte}/{Anio}/{Mes}/
+    Nombre: {NombreReporte}_{fecha}.xlsx
+    
+    Contenido: Registros NC marcados como CON NOVEDAD
+    
+    Estructura de carpetas creada automaticamente por mes
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "RutaBaseReporteNC": "C:/Reportes/NC",
+        "NombreReporteNC": "Reporte_NotasCredito"
+    }))
+    
+    # Ejecutar funcion
+    HU42_ValidarNotasCreditoDebito()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")
+    resumen = GetVar("vLocStrResumenSP")
+    # "Procesamiento Finalizado. NC: 15, ND: 8"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Tolerancia para comparacion de montos: 0.01
+    - Busqueda de FV por montos: 3 meses hacia atras
+    - Tablas Comparativa se limpian y repueblan en cada ejecucion
+    - Observaciones se truncan a 3900 caracteres
+    - Conexion soporta SQL Auth y Windows Auth (fallback)
+    - Errores por registro no detienen el proceso
+
+================================================================================
+FUNCIONES AUXILIARES PRINCIPALES
+================================================================================
+
+    safe_str(v):
+        Convierte cualquier valor a string de forma segura
+        
+    truncar_observacion(obs, max_len=3900):
+        Trunca observaciones para evitar overflow en BD
+        
+    normalizar_decimal(valor):
+        Normaliza valores monetarios (maneja formatos 1.200,50)
+        
+    campo_vacio(valor) / campo_con_valor(valor):
+        Verifica si un campo tiene datos validos
+        
+    quitar_tildes(texto):
+        Elimina acentos para estandarizacion
+        
+    calcular_dias_diferencia(fecha_inicio, fecha_fin):
+        Calcula dias entre fechas (multiples formatos)
+
+================================================================================
+FUNCIONES DE VALIDACION ND
+================================================================================
+
+    validar_nombre_receptor(nombre):
+        Verifica DIANA CORPORACION SAS o DICORP SAS
+        
+    validar_nit_receptor(nit):
+        Verifica NIT 860031606
+        
+    validar_tipo_persona(tipo):
+        Verifica codigo 31
+        
+    validar_digito_verificacion(digito):
+        Verifica digito 6
+        
+    validar_tax_level_code(tax_code):
+        Verifica O-13, O-15, O-23, O-47 o R-99-PN
+
+================================================================================
+"""
+
 def HU42_ValidarNotasCreditoDebito():
     """
     Funcion principal para procesar las validaciones de Notas Credito (NC) y Notas Debito (ND).

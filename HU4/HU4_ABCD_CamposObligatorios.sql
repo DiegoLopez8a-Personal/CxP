@@ -1,3 +1,266 @@
+/*
+================================================================================
+STORED PROCEDURE: [CxP].[HU4_ABCD_CamposObligatorios]
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida campos obligatorios de documentos de facturacion electronica en la
+    Fase 4 del proceso HU4. Identifica documentos con datos faltantes o
+    inconsistentes y los marca como RECHAZADO.
+    
+    Este SP procesa documentos tipo FV (Factura de Venta) que estan dentro
+    del plazo de dias maximos desde la fecha de retoma.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Base de Datos: NotificationsPaddy
+Schema: CxP
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |         [CxP].[HU4_ABCD_CamposObligatorios]                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Validar parametros:                                        |
+    |  - @DiasMaximos > 0                                         |
+    |  - @BatchSize > 0                                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Verificar tablas requeridas:                               |
+    |  - [CxP].[DocumentsProcessing]                              |
+    |  - [dbo].[CxP.Comparativa]                                  |
+    |  - [CxP].[ReporteNovedades] (crear si no existe)            |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Limpiar tablas de trabajo:                                 |
+    |  - TRUNCATE [CxP].[ReporteNovedades]                        |
+    |  - TRUNCATE [dbo].[CxP.Comparativa]                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Definir lista de Items para Comparativa (75 items)         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Procesar en lotes (@BatchSize):                            |
+    |  WHILE existan documentos elegibles                         |
+    |  +-------------------------------------------------------+  |
+    |  |  Seleccionar batch de documentos FV:                  |  |
+    |  |  - Dentro de @DiasMaximos                             |  |
+    |  |  - Estado no en lista de omitir                       |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Actualizar fecha de retoma si es NULL                |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Insertar Items en [CxP.Comparativa]                  |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar campos obligatorios:                         |  |
+    |  |  - Tipo Persona Emisor (13, 31)                       |  |
+    |  |  - Digito Verificacion Emisor                         |  |
+    |  |  - Tipo Persona Adquiriente (13, 31)                  |  |
+    |  |  - Digito Verificacion Adquiriente (= 6)              |  |
+    |  |  - NIT Adquiriente (= 860031606)                      |  |
+    |  |  - Fecha Emision Documento                            |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Marcar RECHAZADO los que fallan validacion           |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Insertar en [CxP].[ReporteNovedades]:                      |
+    |  - Solo registros con ResultadoFinalAntesEventos            |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar ResultSets:                                       |
+    |  1. Resumen de ejecucion                                    |
+    |  2. Detalle de registros procesados                         |
+    +-------------------------------------------------------------+
+
+================================================================================
+PARAMETROS
+================================================================================
+
+    @DiasMaximos INT = 120
+        Dias maximos desde la fecha de retoma para considerar un documento.
+        Documentos mas antiguos no se procesan.
+        
+    @BatchSize INT = 500
+        Cantidad de documentos a procesar por lote.
+        Controla el uso de memoria y bloqueos.
+
+================================================================================
+TABLAS UTILIZADAS
+================================================================================
+
+Tablas de Entrada:
+------------------
+    [CxP].[DocumentsProcessing]
+        Tabla principal de documentos de facturacion electronica.
+        Campos clave:
+        - ID: Identificador unico
+        - documenttype: Tipo de documento (FV, NC, ND)
+        - Fecha_de_retoma_antes_de_contabilizacion: Fecha de retoma
+        - ResultadoFinalAntesEventos: Estado del documento
+        - Tipo_Persona_Emisor, Digito_de_verificacion_Emisor
+        - tipo_persona, digito_de_verificacion (adquiriente)
+        - nit_del_adquiriente, fecha_de_emision_documento
+
+    [CxP].[DetailsProcessing]
+        Detalles de lineas de factura (opcional).
+        Se usa para contar NumeroLineas.
+
+Tablas de Salida:
+-----------------
+    [dbo].[CxP.Comparativa]
+        Tabla comparativa con Items y valores XML.
+        Se trunca y regenera en cada ejecucion.
+        
+    [CxP].[ReporteNovedades]
+        Reporte de novedades para seguimiento.
+        Campos: ID, Fecha_Carga, Nit, Nombre_Proveedor, etc.
+
+================================================================================
+ESTADOS OMITIDOS
+================================================================================
+
+Los documentos con estos estados NO se procesan:
+    - APROBADO
+    - APROBADO CONTADO Y/O EVENTO MANUAL
+    - APROBADO SIN CONTABILIZACION
+    - RECHAZADO
+    - RECLASIFICAR
+    - RECHAZADO - RETORNADO
+    - CON NOVEDAD - RETORNADO
+    - EN ESPERA DE POSICIONES
+    - NO EXITOSO
+
+================================================================================
+VALIDACIONES DE CAMPOS OBLIGATORIOS
+================================================================================
+
+El SP valida los siguientes campos y marca como RECHAZADO si fallan:
+
+    1. Tipo_Persona_Emisor
+       - Debe ser 13 o 31
+       - Mensaje: "Se rechaza factura por inconsistencia... Tipo Persona Emisor"
+       
+    2. Digito_de_verificacion_Emisor
+       - No debe ser NULL
+       - Mensaje: "Se rechaza factura por... Digito de verificacion Emisor"
+       
+    3. tipo_persona (Adquiriente)
+       - Debe ser 13 o 31
+       - Mensaje: "Se rechaza factura por... Tipo Persona Adquiriente"
+       
+    4. digito_de_verificacion (Adquiriente)
+       - Debe ser exactamente 6
+       - Mensaje: "Se rechaza factura por... Digito de verificacion Adquiriente"
+       
+    5. nit_del_adquiriente
+       - Debe ser exactamente 860031606
+       - Mensaje: "Se rechaza factura por... Nit del Adquiriente"
+       
+    6. fecha_de_emision_documento
+       - No debe ser NULL
+       - Mensaje: "Se rechaza factura por... Fecha de emision documento"
+
+================================================================================
+RESULTSETS DE SALIDA
+================================================================================
+
+ResultSet 1: Resumen de Ejecucion
+---------------------------------
+    FechaEjecucion              DATETIMEOFFSET  - Fecha y hora de ejecucion
+    DiasMaximos                 INT             - Parametro usado
+    BatchSize                   INT             - Parametro usado
+    RegistrosProcesados         INT             - Total de registros procesados
+    RetomaSetDesdeNull          INT             - Registros con fecha retoma asignada
+    MarcadosNoExitoso           INT             - Registros marcados NO EXITOSO
+    MarcadosRechazado           INT             - Registros marcados RECHAZADO
+    OKDentroDiasMaximos         INT             - Registros OK dentro del plazo
+    FilasInsertadasComparativa  INT             - Filas insertadas en Comparativa
+    RegistrosReporteNovedades   INT             - Registros en ReporteNovedades
+
+ResultSet 2: Detalle de Registros
+---------------------------------
+    ID                                          - ID del documento
+    numero_de_factura                           - Numero de factura
+    nit_emisor_o_nit_del_proveedor              - NIT del emisor
+    documenttype                                - Tipo de documento
+    Fecha_de_retoma_antes_de_contabilizacion    - Fecha de retoma
+    DiasTranscurridosDesdeRetoma                - Dias desde la retoma
+    ResultadoFinalAntesEventos                  - Estado final
+    EstadoFinalFase_4                           - Estado de la fase 4
+    ObservacionesFase_4                         - Observaciones
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+-- Ejemplo 1: Ejecucion con valores por defecto
+EXEC [CxP].[HU4_ABCD_CamposObligatorios];
+
+-- Ejemplo 2: Ejecucion con parametros personalizados
+EXEC [CxP].[HU4_ABCD_CamposObligatorios]
+    @DiasMaximos = 90,
+    @BatchSize = 1000;
+
+-- Ejemplo 3: Ejecucion para pruebas (lote pequeno)
+EXEC [CxP].[HU4_ABCD_CamposObligatorios]
+    @DiasMaximos = 30,
+    @BatchSize = 50;
+
+================================================================================
+MANEJO DE ERRORES
+================================================================================
+
+El SP utiliza TRY-CATCH para manejar errores:
+
+    - Si ocurre error, se hace ROLLBACK de la transaccion
+    - Se retorna un ResultSet con la informacion del error:
+        - FechaEjecucion
+        - DiasMaximos
+        - BatchSize
+        - Error (mensaje detallado)
+    - Se lanza excepcion con THROW 50010
+
+Codigos de Error:
+    50000 - @DiasMaximos invalido
+    50001 - @BatchSize invalido
+    50002 - Tabla [CxP].[DocumentsProcessing] no existe
+    50003 - Tabla [dbo].[CxP.Comparativa] no existe
+    50004 - Error limpiando [CxP.Comparativa]
+    50010 - Error general en procesamiento
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - El SP usa SET NOCOUNT ON y SET XACT_ABORT ON
+    - Procesa en lotes para evitar bloqueos prolongados
+    - Usa tablas temporales (#ProcessedIDs, #Eligible, #Batch)
+    - La tabla Comparativa se trunca al inicio (proceso destructivo)
+    - Las observaciones se concatenan (no se sobrescriben)
+    - Limite de 3900 caracteres en ObservacionesFase_4
+
+================================================================================
+*/
+
 USE [NotificationsPaddy]
 GO
 /****** Object:  StoredProcedure [CxP].[HU4_ABCD_CamposObligatorios]    Script Date: 01/02/2026 4:33:03 ******/

@@ -1,3 +1,228 @@
+"""
+================================================================================
+SCRIPT: HU4_1_ZPSA_ZPSS.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida pedidos de Servicios (Clases ZPSA/ZPSS/43) implementando multiples
+    rutas de validacion segun las caracteristicas del pedido: tiene Orden,
+    tiene Elemento PEP, tiene Activo Fijo, o es General.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0
+Plataforma: RocketBot RPA
+
+================================================================================
+RUTAS DE VALIDACION
+================================================================================
+
+    RUTA A - TIENE ORDEN:
+    ---------------------
+        Orden 15:
+            - Indicador impuestos: H4, H5, H6, H7, VP, CO, IC, CR
+            - Centro de coste: debe estar VACIO
+            - Cuenta: debe ser 5199150001
+            - Clase orden segun indicador (H4/H5->ZINV, H6/H7->ZADM)
+            
+        Orden 53:
+            - Centro de coste: debe estar DILIGENCIADO (estadisticas)
+            
+        Orden diferente (!=15, !=53):
+            - Centro de coste: debe estar VACIO
+            - Cuenta: 5299150099 o inicia con 7 (10 digitos)
+
+    RUTA B - TIENE ELEMENTO PEP (sin Orden):
+    ----------------------------------------
+        - Indicador impuestos: H4, H5, H6, H7, VP, CO, IC, CR
+        - Centro de coste: debe estar VACIO
+        - Cuenta: debe ser 5199150001
+        - Emplazamiento segun indicador:
+            * H4/H5 -> DCTO_01
+            * H6/H7 -> GTO_02
+            * VP/CO/CR/IC -> DCTO_01 o GTO_02
+
+    RUTA C - TIENE ACTIVO FIJO (sin Orden ni PEP):
+    ----------------------------------------------
+        Activo Diferido (inicia con 2000, 10 digitos):
+            - Indicador impuestos: C1, FA, VP, CO, CR
+            - Centro de coste: debe estar VACIO
+            - Cuenta: debe estar VACIA
+            
+        No diferido:
+            - Aplica validaciones generales
+
+    RUTA D - GENERALES (sin Orden, PEP ni Activo Fijo):
+    --------------------------------------------------
+        - Cuenta: debe estar DILIGENCIADA
+        - Indicador impuestos: debe estar DILIGENCIADO
+        - Centro de coste: debe estar DILIGENCIADO
+        - Cruce indicador-CECO segun archivo impuestos especiales
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |           ZPSA_ZPSS_ValidarServicios()                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  1. Cargar archivo Impuestos Especiales (opcional)          |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  2. Consultar candidatos ZPSA/ZPSS/43                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  3. Para cada registro, determinar RUTA:                    |
+    |  +-------------------------------------------------------+  |
+    |  |  Tiene Orden?                                         |  |
+    |  |    SI -> RUTA A (validaciones segun tipo orden)       |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Tiene ElementoPEP? (y no Orden)                      |  |
+    |  |    SI -> RUTA B (validaciones PEP)                    |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Tiene ActivoFijo? (y no Orden ni PEP)                |  |
+    |  |    SI -> RUTA C (validaciones Activo)                 |  |
+    |  +-------------------------------------------------------+  |
+    |  |  ELSE                                                 |  |
+    |  |    -> RUTA D (validaciones Generales)                 |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  4. Actualizar resultados en BD                             |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  5. Retornar estadisticas a RocketBot                       |
+    +-------------------------------------------------------------+
+
+================================================================================
+ARCHIVO IMPUESTOS ESPECIALES (Opcional)
+================================================================================
+
+    Ruta: RutaImpuestosEspeciales en config
+    
+    Hojas requeridas:
+        - TRIBUTO
+        - TARIFAS ESPECIALES
+        - IVA CECO
+        
+    Uso: Mapeo CECO a indicadores IVA permitidos para RUTA D
+
+================================================================================
+INDICADORES DE IMPUESTOS VALIDOS
+================================================================================
+
+    Por Ruta:
+        - Orden 15 / Elemento PEP: H4, H5, H6, H7, VP, CO, IC, CR
+        - Activo Fijo Diferido: C1, FA, VP, CO, CR
+
+    Reglas de Clase Orden (Orden 15):
+        - H4/H5 -> ZINV
+        - H6/H7 -> ZADM
+        - VP/CO/CR/IC -> ZINV o ZADM
+
+    Reglas de Emplazamiento (Elemento PEP):
+        - H4/H5 -> DCTO_01
+        - H6/H7 -> GTO_02
+        - VP/CO/CR/IC -> DCTO_01 o GTO_02
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+        - UsuarioBaseDatos: Usuario SQL
+        - ClaveBaseDatos: Contrasena SQL
+        - RutaImpuestosEspeciales: Ruta al archivo Excel (opcional)
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario alternativo para conexion
+
+    vGblStrClaveBaseDatos : str
+        Contrasena alternativa para conexion
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error critico
+
+    vLocStrResumenSP : str
+        "Procesados X registros ZPSA/ZPSS. Exitosos: Y, Con novedad: Z"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error critico
+
+    vGblStrSystemError : str
+        "ErrorHU4_4.1" en caso de error
+
+================================================================================
+ESTADOS FINALES POSIBLES
+================================================================================
+
+    - PROCESADO: Validacion exitosa sin novedades
+    - PROCESADO CONTADO: Validacion exitosa, forma de pago contado
+    - CON NOVEDAD: Se encontraron discrepancias
+    - CON NOVEDAD CONTADO: Discrepancias con forma de pago contado
+
+================================================================================
+TABLAS INVOLUCRADAS
+================================================================================
+
+    Lectura:
+        - [CxP].[HU41_CandidatosValidacion]: Candidatos a validar
+        
+    Escritura:
+        - [CxP].[DocumentsProcessing]: Estado y observaciones
+        - [dbo].[CxP.Comparativa]: Trazabilidad de validaciones
+        - [CxP].[HistoricoOrdenesCompra]: Marca de ordenes procesadas
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "sqlserver.empresa.com",
+        "NombreBaseDatos": "CxP_Produccion",
+        "RutaImpuestosEspeciales": "C:/Insumos/ImpuestosEspeciales.xlsx"
+    }))
+    
+    # Ejecutar la validacion
+    ZPSA_ZPSS_ValidarServicios()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")
+    resumen = GetVar("vLocStrResumenSP")
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Errores individuales por registro NO detienen el proceso
+    - Solo errores criticos de infraestructura detienen el bot
+    - Tolerancia para montos: $500 COP
+    - Archivo de impuestos especiales es opcional pero recomendado
+    - Procesa posicion por posicion (valores separados por |)
+    - Observaciones se truncan a 3900 caracteres
+
+================================================================================
+"""
+
 def ZPSA_ZPSS_ValidarServicios():
     """
     Funcion principal para procesar las validaciones de pedidos ZPSA/ZPSS/43 (Pedidos de Servicios).

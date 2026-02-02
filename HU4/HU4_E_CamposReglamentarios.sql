@@ -1,3 +1,238 @@
+/*
+================================================================================
+STORED PROCEDURE: [CxP].[HU4_E_CamposReglamentarios]
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida campos reglamentarios de documentos de facturacion electronica.
+    Verifica responsabilidades tributarias, codigos de tipo de documento,
+    descripcion del codigo DIAN, medios de pago, y ano de emision.
+    
+    Los documentos que no cumplen se marcan como CON NOVEDAD o 
+    CON NOVEDAD ANO CERRADO.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Base de Datos: NotificationsPaddy
+Schema: CxP
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |          [CxP].[HU4_E_CamposReglamentarios]                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Crear tabla [CxP].[ReporteNovedades] si no existe          |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Parsear parametros de listas:                              |
+    |  - @TaxLevelCode -> #TaxLevelCodeTable                      |
+    |  - @InvoiceTypecode -> #InvoiceTypecodeTable                |
+    |  - @EstadosOmitir -> #EstadosOmitirTable                    |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Cargar documentos elegibles en #Docs:                      |
+    |  - Estado no en lista de omitir                             |
+    |  - Fecha retoma dentro de @DiasMaximos                      |
+    |  - documenttype = 'FV'                                      |
+    +-----------------------------+-------------------------------+
+                                  |
+                  +---------------+---------------+
+                  |    Hay documentos?            |
+                  +---------------+---------------+
+                         |                |
+                         | NO             | SI
+                         v                v
+    +------------------------+   +--------------------------------+
+    |  Retornar sin procesar |   |  Validar TaxLevelCode Emisor   |
+    |  "SIN DOCUMENTOS"      |   +----------------+---------------+
+    +------------------------+                    |
+                                                  v
+    +-------------------------------------------------------------+
+    |  Validar TaxLevelCode Adquiriente                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Procesar en lotes (@BatchSize):                            |
+    |  WHILE @MinRow <= @TotalDocs                                |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar TaxLevelCode (Emisor y Adquiriente)          |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar ValidationResultCode (02)                    |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar InvoiceTypecode (01,02,03,04,91,92,96)       |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar DescripcionCodigo (DIAN)                     |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar PaymentMeans (01, 02)                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Validar Ano de Emision (si mes <> enero)             |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Actualizar Comparativa con Observaciones             |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Insertar en [CxP].[ReporteNovedades]                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar ResultSet con resumen                             |
+    +-------------------------------------------------------------+
+
+================================================================================
+PARAMETROS
+================================================================================
+
+    @DiasMaximos INT = 120
+        Dias maximos desde la fecha de retoma.
+        
+    @BatchSize INT = 500
+        Cantidad de documentos por lote.
+        
+    @RangoMaxValor INT = 500
+        Rango maximo de valor (no utilizado actualmente).
+        
+    @TaxLevelCode NVARCHAR(MAX) = 'O-13,O-15,O-23,O-47,R-99-PN'
+        Lista de codigos de responsabilidad tributaria validos.
+        Separados por comas.
+        
+    @InvoiceTypecode NVARCHAR(MAX) = '01,02,03,04,91,92,96'
+        Lista de tipos de factura validos.
+        Separados por comas.
+        
+    @EstadosOmitir NVARCHAR(MAX) = 'APROBADO,APROBADO CONTADO Y/O...'
+        Lista de estados a omitir del procesamiento.
+        Separados por comas.
+
+================================================================================
+VALIDACIONES REALIZADAS
+================================================================================
+
+1. TaxLevelCode Emisor
+   - El campo responsabilidad_tributaria_emisor debe contener
+     al menos un codigo de la lista @TaxLevelCode
+   - Se separa por punto y coma (;) para validar
+   
+2. TaxLevelCode Adquiriente
+   - El campo responsabilidad_tributaria_adquiriente debe contener
+     al menos un codigo de la lista @TaxLevelCode
+   - Se separa por punto y coma (;) para validar
+   
+3. ValidationResultCode
+   - Debe ser '02'
+   - Mensaje: "ValidationResultCode diferente a 02"
+   
+4. InvoiceTypecode
+   - Debe estar en la lista: 01, 02, 03, 04, 91, 92, 96
+   - Mensaje: "InvoiceTypecode diferente a los valores esperados"
+   
+5. DescripcionCodigo
+   - Debe ser exactamente "Documento validado por la DIAN"
+   - Mensaje: "DescripcionCodigo diferente a..."
+   
+6. PaymentMeans
+   - Debe ser 01 o 02
+   - Mensaje: "PaymentMeans diferente a 01 o 02"
+   
+7. Ano de Emision (solo si mes actual <> enero)
+   - El ano de fecha_de_emision_documento debe ser el ano actual
+   - Mensaje: "Ano de Fecha de emision documento diferente..."
+   - Estado: CON NOVEDAD ANO CERRADO
+
+================================================================================
+ESTADOS DE SALIDA
+================================================================================
+
+    CON NOVEDAD
+        - Documento con problemas en campos reglamentarios
+        
+    CON NOVEDAD ANO CERRADO
+        - Documento con ano de emision diferente al actual
+        - Solo se aplica si el mes actual NO es enero
+
+================================================================================
+TABLAS UTILIZADAS
+================================================================================
+
+Tablas de Entrada:
+------------------
+    [CxP].[DocumentsProcessing]
+        - responsabilidad_tributaria_emisor
+        - responsabilidad_tributaria_adquiriente
+        - validationresultcode
+        - codigo_tipo_de_documento
+        - descripcion_del_codigo
+        - forma_de_pago
+        - fecha_de_emision_documento
+
+Tablas de Salida:
+-----------------
+    [dbo].[CxP.Comparativa]
+        - Se actualizan Items con Valor_Orden_de_Compra y Aprobado
+        
+    [CxP].[ReporteNovedades]
+        - Se insertan registros con novedades
+
+================================================================================
+RESULTSET DE SALIDA
+================================================================================
+
+ResultSet Unico:
+----------------
+    FechaEjecucion              DATETIME2   - Fecha y hora
+    RegistrosProcesados         INT         - Total procesados
+    RegistrosConNovedad         INT         - Con estado CON NOVEDAD
+    RegistrosAnoCerrado         INT         - Con estado ANO CERRADO
+    LotesProcesados             INT         - Cantidad de lotes
+    TiempoTotalSegundos         INT         - Duracion
+    RegistrosInsertadosReporte  INT         - En ReporteNovedades
+    Estado                      VARCHAR     - COMPLETADO o SIN DOCUMENTOS
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+-- Ejemplo 1: Ejecucion con valores por defecto
+EXEC [CxP].[HU4_E_CamposReglamentarios];
+
+-- Ejemplo 2: Parametros personalizados
+EXEC [CxP].[HU4_E_CamposReglamentarios]
+    @DiasMaximos = 90,
+    @BatchSize = 1000,
+    @TaxLevelCode = 'O-13,O-15,O-23';
+
+-- Ejemplo 3: Modificar estados a omitir
+EXEC [CxP].[HU4_E_CamposReglamentarios]
+    @EstadosOmitir = 'APROBADO,RECHAZADO';
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Usa STRING_SPLIT para parsear listas de parametros
+    - Los TaxLevelCode se separan por punto y coma (;) en los datos
+    - El chequeo de ano cerrado solo aplica si mes <> 1 (enero)
+    - Las observaciones se concatenan con las existentes
+    - Limite de 3900 caracteres en ObservacionesFase_4
+    - Procesa en lotes para evitar bloqueos
+
+================================================================================
+*/
+
 USE [NotificationsPaddy]
 GO
 /****** Object:  StoredProcedure [CxP].[HU4_E_CamposReglamentarios]    Script Date: 01/02/2026 4:39:58 ******/

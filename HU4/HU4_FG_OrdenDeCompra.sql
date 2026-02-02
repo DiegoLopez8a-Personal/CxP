@@ -1,3 +1,246 @@
+/*
+================================================================================
+STORED PROCEDURE: [CxP].[HU4_FG_OrdenDeCompra]
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida ordenes de compra para identificar documentos que corresponden a
+    Importaciones (prefijo 40) o Costo Indirecto Fletes (prefijo 46).
+    Estos documentos se excluyen del flujo normal de procesamiento.
+    
+    El SP procesa documentos tipo FV cuyo numero de liquidacion u orden de
+    compra comienza con '40' o '46'.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Base de Datos: NotificationsPaddy
+Schema: CxP
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |           [CxP].[HU4_FG_OrdenDeCompra]                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Crear tabla [CxP].[ReporteNovedades] si no existe          |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Validar parametros:                                        |
+    |  - @DiasMaximos > 0                                         |
+    |  - @BatchSize > 0                                           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Verificar tablas requeridas:                               |
+    |  - [CxP].[DocumentsProcessing]                              |
+    |  - [dbo].[CxP.Comparativa]                                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Definir estados a omitir en #EstadosOmitir                 |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Procesar en lotes (@BatchSize):                            |
+    |  WHILE 1 = 1                                                |
+    |  +-------------------------------------------------------+  |
+    |  |  Seleccionar batch de documentos FV:                  |  |
+    |  |  - numero_liquidacion comienza con '40' o '46'        |  |
+    |  |  - Dentro de @DiasMaximos                             |  |
+    |  |  - Estado no en lista de omitir                       |  |
+    |  +-------------------------------------------------------+  |
+    |  |  IF @@ROWCOUNT = 0 BREAK                              |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Actualizar fecha de retoma si es NULL                |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Clasificar en #ImpBatch (40) y #FleteBatch (46)      |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI hay Importaciones (40):                           |  |
+    |  |  - Marcar EXCLUIDO IMPORTACIONES                      |  |
+    |  |  - Actualizar Comparativa                             |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI hay Fletes (46):                                  |  |
+    |  |  - Marcar EXCLUIDO COSTO INDIRECTO FLETES             |  |
+    |  |  - Actualizar Comparativa                             |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Insertar en [CxP].[ReporteNovedades]                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar ResultSets:                                       |
+    |  1. Resumen de ejecucion                                    |
+    |  2. Detalle de registros procesados                         |
+    +-------------------------------------------------------------+
+
+================================================================================
+PARAMETROS
+================================================================================
+
+    @DiasMaximos INT = 120
+        Dias maximos desde la fecha de retoma.
+        
+    @BatchSize INT = 500
+        Cantidad de documentos por lote.
+
+================================================================================
+CLASIFICACION DE ORDENES DE COMPRA
+================================================================================
+
+Prefijo 40 - IMPORTACIONES
+--------------------------
+    - numero_de_liquidacion_u_orden_de_compra comienza con '40'
+    - Estado final: EXCLUIDO IMPORTACIONES
+    - Mensaje: "Factura excluida corresponde a Importaciones"
+
+Prefijo 46 - COSTO INDIRECTO FLETES
+-----------------------------------
+    - numero_de_liquidacion_u_orden_de_compra comienza con '46'
+    - Estado final: EXCLUIDO COSTO INDIRECTO FLETES
+    - Mensaje: "Factura excluida corresponde a costo indirecto fletes"
+
+================================================================================
+ESTADOS OMITIDOS
+================================================================================
+
+Los documentos con estos estados NO se procesan:
+    - APROBADO
+    - APROBADO CONTADO Y/O EVENTO MANUAL
+    - APROBADO SIN CONTABILIZACION
+    - RECHAZADO
+    - RECLASIFICAR
+    - RECHAZADO - RETORNADO
+    - CON NOVEDAD - RETORNADO
+    - EN ESPERA DE POSICIONES
+    - EXCLUIDO IMPORTACIONES
+    - NO EXITOSO
+    - EXCLUIDO COSTO INDIRECTO FLETES
+
+================================================================================
+TABLAS UTILIZADAS
+================================================================================
+
+Tablas de Entrada:
+------------------
+    [CxP].[DocumentsProcessing]
+        - ID
+        - documenttype (debe ser 'FV')
+        - numero_de_liquidacion_u_orden_de_compra
+        - Fecha_de_retoma_antes_de_contabilizacion
+        - ResultadoFinalAntesEventos
+
+Tablas de Salida:
+-----------------
+    [dbo].[CxP.Comparativa]
+        - Se actualiza Item 'Observaciones'
+        - Se actualiza Estado_validacion_antes_de_eventos
+        - Se insertan nuevos registros si no existen
+        
+    [CxP].[ReporteNovedades]
+        - Se insertan registros excluidos
+
+================================================================================
+RESULTSETS DE SALIDA
+================================================================================
+
+ResultSet 1: Resumen de Ejecucion
+---------------------------------
+    FechaEjecucion                      DATETIME2
+    DiasMaximos                         INT
+    BatchSize                           INT
+    RegistrosProcesados                 INT
+    RetomaSetDesdeNull                  INT
+    ExcluidosImportaciones              INT
+    ExcluidosCostoIndirectoFletes       INT
+    ComparativaObservacionesActualizadas INT
+    ComparativaEstadosActualizados      INT
+    RegistrosReporteNovedades           INT
+
+ResultSet 2: Detalle de Registros
+---------------------------------
+    ID
+    numero_de_factura
+    nit_emisor_o_nit_del_proveedor
+    documenttype
+    numero_de_liquidacion_u_orden_de_compra
+    Fecha_de_retoma_antes_de_contabilizacion
+    DiasTranscurridosDesdeRetoma
+    ResultadoFinalAntesEventos
+    EstadoFinalFase_4
+    ObservacionesFase_4
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+-- Ejemplo 1: Ejecucion con valores por defecto
+EXEC [CxP].[HU4_FG_OrdenDeCompra];
+
+-- Ejemplo 2: Parametros personalizados
+EXEC [CxP].[HU4_FG_OrdenDeCompra]
+    @DiasMaximos = 90,
+    @BatchSize = 1000;
+
+-- Ejemplo 3: Consulta previa para ver candidatos
+SELECT 
+    ID,
+    numero_de_liquidacion_u_orden_de_compra,
+    LEFT(numero_de_liquidacion_u_orden_de_compra, 2) AS Prefijo
+FROM [CxP].[DocumentsProcessing]
+WHERE LEFT(numero_de_liquidacion_u_orden_de_compra, 2) IN ('40', '46')
+  AND documenttype = 'FV';
+
+================================================================================
+MANEJO DE ERRORES
+================================================================================
+
+El SP utiliza TRY-CATCH dentro de cada lote:
+
+    - Si ocurre error, se hace ROLLBACK de la transaccion
+    - Se retorna un ResultSet con:
+        - FechaEjecucion
+        - DiasMaximos
+        - BatchSize
+        - RegistrosReporteNovedades = 0
+        - Error (mensaje detallado)
+    - Se lanza excepcion con THROW 52099
+
+Codigos de Error:
+    52000 - @DiasMaximos invalido
+    52001 - @BatchSize invalido
+    52002 - Tabla DocumentsProcessing no existe
+    52003 - Tabla Comparativa no existe
+    52099 - Error general en procesamiento
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Usa LEFT() para extraer prefijo de orden de compra
+    - Procesa en lotes infinitos (WHILE 1=1) hasta que no hay mas registros
+    - Usa tablas temporales para tracking (#ProcessedIDs, #Batch)
+    - Inserta en Comparativa si no existe el Item 'Observaciones'
+    - Las observaciones se concatenan (no se sobrescriben)
+    - EstadoFinalFase_4 se establece como "VALIDACION DATOS DE FACTURACION: Exitoso"
+
+================================================================================
+*/
+
 USE [NotificationsPaddy]
 GO
 /****** Object:  StoredProcedure [CxP].[HU4_FG_OrdenDeCompra]    Script Date: 01/02/2026 4:40:39 ******/

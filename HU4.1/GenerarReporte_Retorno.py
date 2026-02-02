@@ -1,3 +1,160 @@
+"""
+================================================================================
+SCRIPT: GenerarReporte_Retorno.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Genera reporte Excel con todas las novedades detectadas en el proceso HU4.
+    Inserta registros CON NOVEDAD en la tabla [CxP].[ReporteNovedades] y
+    exporta el contenido completo a un archivo Excel formateado.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |             GenerarReporte_Retorno()                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 1: Consultar registros CON NOVEDAD                    |
+    |  de [CxP].[DocumentsProcessing]                             |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 2: Insertar nuevos registros en                       |
+    |  [CxP].[ReporteNovedades]                                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 3: Consultar TODOS los registros de                   |
+    |  [CxP].[ReporteNovedades]                                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 4: Preparar datos para Excel                          |
+    |  - Renombrar columnas                                       |
+    |  - Convertir valores a string                               |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  PASO 5: Crear archivo Excel con openpyxl                   |
+    |  - Aplicar formato profesional                              |
+    |  - Encabezados con estilo                                   |
+    |  - Ajustar anchos de columna                                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y ruta del archivo                   |
+    +-------------------------------------------------------------+
+
+================================================================================
+ESTRUCTURA ARCHIVO EXCEL
+================================================================================
+
+    Columnas del reporte:
+        - ID: Identificador del registro
+        - Fecha_Carga: Fecha de carga del documento
+        - Nit: NIT del proveedor
+        - Nombre Proveedor: Nombre del proveedor
+        - Orden_de_compra: Numero de orden de compra
+        - Numero_factura: Numero de factura
+        - Estado_CXP_Bot: Estado asignado por el bot
+        - Observaciones: Detalle de la novedad
+
+    Formato:
+        - Encabezados: Fondo azul (#366092), texto blanco, negrita
+        - Celdas: Arial 10, alineacion izquierda
+        - Bordes: Linea fina negra
+
+================================================================================
+ESTRUCTURA TABLA [CxP].[ReporteNovedades]
+================================================================================
+
+    Columna              Tipo              Descripcion
+    -------              ----              -----------
+    RowID                INT IDENTITY      ID autoincremental
+    ID                   NVARCHAR(MAX)     ID del documento
+    Fecha_Carga          NVARCHAR(MAX)     Fecha de carga
+    Nit                  NVARCHAR(MAX)     NIT proveedor
+    Nombre_Proveedor     NVARCHAR(MAX)     Nombre proveedor
+    Orden_de_compra      NVARCHAR(MAX)     Numero OC
+    Numero_factura       NVARCHAR(MAX)     Numero factura
+    Estado_CXP_Bot       NVARCHAR(MAX)     Estado final
+    Observaciones        NVARCHAR(MAX)     Observaciones
+    SP_Origen            NVARCHAR(100)     Origen del registro
+    Fecha_Insercion      DATETIME          Fecha de insercion
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Base de datos
+        - RutaBaseReporte: Directorio para guardar el archivo
+        - NombreBaseReporte: Nombre base del archivo (sin timestamp)
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        "Reporte OK. Insertados:X TotalTabla:Y Exportados:Z Archivo:nombre.xlsx"
+
+    vLocStrRutaReporte : str
+        Ruta completa del archivo generado
+
+    vLocDicEstadisticas : str
+        Diccionario con estadisticas
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "RutaBaseReporte": "C:/Reportes/CxP",
+        "NombreBaseReporte": "Reporte_Novedades"
+    }))
+    
+    # Ejecutar funcion
+    GenerarReporte_Retorno()
+    
+    # Obtener ruta del archivo
+    ruta = GetVar("vLocStrRutaReporte")
+    # "C:/Reportes/CxP/Reporte_Novedades_20240115_143022.xlsx"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Timestamp se agrega automaticamente al nombre del archivo
+    - Si no puede guardar, intenta con sufijo "1"
+    - Usa openpyxl para formato profesional
+    - Ordena por Fecha_Insercion DESC, RowID DESC
+    - SP_Origen = 'GenerarReporte_Retorno'
+
+================================================================================
+"""
+
 def GenerarReporte_Retorno():
     import json
     import ast

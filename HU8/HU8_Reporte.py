@@ -1,3 +1,330 @@
+"""
+================================================================================
+SCRIPT: HU8_Reporte.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Genera reportes consolidados y organiza archivos del proceso CxP.
+    Crea estructura de carpetas en File Server, mueve archivos segun estado,
+    y genera multiples reportes Excel (diarios, mensuales y anuales).
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0 - 12 Enero 2026
+Plataforma: RocketBot RPA
+
+================================================================================
+REPORTES GENERADOS
+================================================================================
+
+    DIARIOS:
+        - Reporte_de_ejecucion_CXP
+        - Reporte_de_ejecucion_COMERCIALIZADOS
+
+    MENSUALES (ejecutan un dia especifico del mes):
+        - Reporte_de_ejecucion_GRANOS
+        - Reporte_de_ejecucion_MAIZ
+        - Reporte_KPIs_CXP
+        - Consolidado_FV_CXP_ConNovedad
+        - Consolidado_CXP_NoExitososRechazados
+        - Consolidado_CXP_Pendientes
+        - Consolidado_NC_ND_CXP
+
+    ANUALES:
+        - Consolidado_Global_CXP
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |              HU8_GenerarReportesCxP()                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  1. Cargar configuracion desde vLocDicConfig                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  2. Crear arbol de carpetas en File Server                  |
+    |     - CONSOLIDADOS                                          |
+    |     - INSUMO DE RETORNO                                     |
+    |     - RESULTADOS BOT CXP                                    |
+    |     - Carpetas por estado (14 categorias)                   |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  3. Conectar a BD y consultar DocumentsProcessing           |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  4. Para cada registro:                                     |
+    |  +-------------------------------------------------------+  |
+    |  |  a. Verificar archivos XML/PDF en ruta respaldo       |  |
+    |  |  b. Determinar carpeta destino segun estado           |  |
+    |  |  c. Mover/copiar archivos a carpeta correspondiente   |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  5. Generar reportes diarios                                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  6. SI es dia de reportes mensuales:                        |
+    |     -> Generar reportes mensuales y KPIs                    |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  7. SI es mes de reporte anual:                             |
+    |     -> Generar Consolidado_Global_CXP                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  8. Retornar estadisticas a RocketBot                       |
+    +-------------------------------------------------------------+
+
+================================================================================
+ESTRUCTURA DE CARPETAS CREADAS
+================================================================================
+
+    {RutaFileServer}/
+    |
+    +-- {Anio}/
+        |
+        +-- {Mes}/
+        |   |
+        |   +-- CONSOLIDADOS/
+        |   +-- INSUMO DE RETORNO/
+        |   +-- {Dia}/
+        |       |
+        |       +-- RESULTADOS BOT CXP/
+        |       +-- EJECUCION {N} CXP/
+        |           |
+        |           +-- CXP/
+        |               |
+        |               +-- INSUMOS/
+        |                   |
+        |                   +-- EN ESPERA/
+        |                   +-- CON NOVEDAD NO CONTADO/
+        |                   +-- CON NOVEDAD NO CONTADO/EXCLUIDOS CONTABILIZACION/
+        |                   +-- CON NOVEDAD CONTADO/
+        |                   +-- CON NOVEDAD CONTADO/EXCLUIDOS CONTABILIZACION/
+        |                   +-- APROBADOS NO CONTADO/
+        |                   +-- APROBADOS CONTADO/
+        |                   +-- APROBADOS SIN CONTABILIZACION/
+        |                   +-- APROBADO CONTADO Y O EVENTO MANUAL/
+        |                   +-- NO EXITOSOS/
+        |                   +-- PENDIENTES/
+        |                   +-- RECLASIFICADOS/
+        |                   +-- RECHAZADOS/
+        |                   +-- ND EXITOSOS/
+        |                   +-- NC ENCONTRADOS/
+        |
+        +-- MATERIA PRIMA GRANOS/
+        |   +-- {Anio}/
+        |       +-- {Mes}/
+        |           +-- INSUMO/
+        |           +-- RESULTADO/
+        |
+        +-- MATERIA PRIMA MAIZ/
+        |   +-- {Anio}/
+        |       +-- {Mes}/
+        |           +-- INSUMO/
+        |           +-- RESULTADO/
+        |
+        +-- COMERCIALIZADOS/
+            +-- {Anio}/
+                +-- {Mes}/
+                    +-- {Dia}/
+                        +-- INSUMO/
+                        |   +-- CON NOVEDAD/
+                        |   +-- EN ESPERA/
+                        +-- RESULTADO/
+
+================================================================================
+CARPETAS DE DESTINO POR ESTADO
+================================================================================
+
+    ResultadoFinalAntesEventos        ->  Carpeta Destino
+    ----------------------------          ---------------
+    EN ESPERA                         ->  EN ESPERA
+    CON NOVEDAD                       ->  CON NOVEDAD NO CONTADO
+    CON NOVEDAD CONTADO               ->  CON NOVEDAD CONTADO
+    CON NOVEDAD EXCLUIDO CONTAB       ->  CON NOVEDAD NO CONTADO/EXCLUIDOS...
+    APROBADO                          ->  APROBADOS NO CONTADO
+    APROBADO CONTADO                  ->  APROBADOS CONTADO
+    APROBADO SIN CONTABILIZACION      ->  APROBADOS SIN CONTABILIZACION
+    APROBADO CONTADO Y/O EVENTO       ->  APROBADO CONTADO Y O EVENTO MANUAL
+    NO EXITOSO                        ->  NO EXITOSOS
+    PENDIENTE                         ->  PENDIENTES
+    RECLASIFICADO                     ->  RECLASIFICADOS
+    RECHAZADO                         ->  RECHAZADOS
+    
+    Notas Debito (ND):
+        EXITOSO                       ->  ND EXITOSOS
+        NO EXITOSO                    ->  NO EXITOSOS
+        
+    Notas Credito (NC):
+        ENCONTRADO                    ->  NC ENCONTRADOS
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+        - UsuarioBaseDatos: Usuario SQL (opcional)
+        - ClaveBaseDatos: Contrasena SQL (opcional)
+        - RutaFileServer: Ruta base del File Server
+        - NumeroEjecucion: Numero de ejecucion actual
+        - DiaReporteMensual: Dia del mes para generar reportes mensuales
+        - MesReporteAnual: Mes para generar reporte anual
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error critico
+
+    vLocStrResumenSP : str
+        "HU8 completada. reportes generados"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error critico
+
+    vGblStrSystemError : str
+        "ErrorHU4_4.1" en caso de error
+
+================================================================================
+FUNCIONES PRINCIPALES
+================================================================================
+
+    crear_arbol_carpetas(ruta_base, ult_numero):
+        Crea toda la estructura de carpetas necesaria
+        Retorna dict con rutas importantes
+        
+    determinar_carpeta_destino(resultado_final, tipo_documento):
+        Determina carpeta de destino segun estado y tipo
+        
+    verificar_archivos_insumo(ruta_respaldo, nombre_archivos):
+        Verifica existencia de archivos XML y PDF
+        
+    mover_archivos_a_destino(ruta_xml, carpeta_destino, ...):
+        Mueve/copia archivos a carpeta correspondiente
+        
+    crear_excel_desde_df(df, ruta_archivo, nombre_hoja):
+        Crea Excel formateado desde DataFrame
+        
+    crear_excel_multihoja(hojas_data, ruta_archivo):
+        Crea Excel con multiples hojas
+
+================================================================================
+FUNCIONES DE GENERACION DE REPORTES
+================================================================================
+
+    generar_reporte_ejecucion_cxp():
+        Reporte diario de ejecucion CxP
+        
+    generar_reporte_granos():
+        Reporte mensual materia prima granos
+        
+    generar_reporte_maiz():
+        Reporte mensual materia prima maiz
+        
+    generar_reporte_comercializados():
+        Reporte diario comercializados (OC inicia con 50)
+        
+    generar_reporte_kpis():
+        KPIs mensuales del proceso
+        
+    generar_consolidado_fv_novedad():
+        Consolidado mensual FV con novedad
+        
+    generar_consolidado_no_exitosos():
+        Consolidado mensual no exitosos y rechazados
+        
+    generar_consolidado_pendientes():
+        Consolidado mensual pendientes
+        
+    generar_consolidado_nc_nd():
+        Consolidado mensual notas credito y debito
+        
+    generar_reporte_anual_global():
+        Consolidado anual de todo el proceso
+
+================================================================================
+FORMATO EXCEL
+================================================================================
+
+    Encabezados:
+        - Fondo azul (#4472C4)
+        - Texto blanco en negrita
+        - Alineacion centrada
+        - Bordes finos
+        
+    Columnas:
+        - Ancho automatico (max 50 caracteres)
+        
+    Datos:
+        - Valores nulos se muestran como vacio
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "RutaFileServer": "\\\\fileserver\\CxP",
+        "NumeroEjecucion": 1,
+        "DiaReporteMensual": 1,
+        "MesReporteAnual": 1
+    }))
+    
+    # Ejecutar funcion
+    HU8_GenerarReportesCxP()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Carpetas se crean con os.makedirs(exist_ok=True)
+    - Archivos se copian con shutil.copy2 (preserva metadata)
+    - Comercializados: OC que inicia con '50' se copia adicionalmente
+    - Meses en espanol sin tildes para nombres de carpetas
+    - Reportes mensuales solo se generan en dia configurado
+    - Reporte anual solo se genera en mes configurado
+
+================================================================================
+CONSTANTES
+================================================================================
+
+    MESES_ESPANOL:
+        Diccionario de meses {1: '01. Enero', 2: '02. Febrero', ...}
+        
+    CARPETAS_INSUMOS:
+        Lista de las 14 carpetas de clasificacion por estado
+
+================================================================================
+"""
+
 def HU8_GenerarReportesCxP():
     """
     Función para generar reportes y organizar archivos del proceso CxP.
@@ -800,8 +1127,8 @@ def HU8_GenerarReportesCxP():
             'ResultadoFinalAntesEventos': 'Estado Validación',
             'Fecha_retoma_contabilizacion': 'Fecha Retoma Contab.',
             'Estado_contabilizacion': 'Estado Contabilización',
-            'Fecha_de_retoma_compensacion': 'Fecha Retoma Comp.',
-            'Estado_compensacion': 'Estado Compensación'
+            'FechaRetomaCompensacion_Fase7': 'Fecha Retoma Comp.',
+            'EstadoCompensacionFase_7': 'Estado Compensación'
         }
 
         # Seleccionamos solo las columnas que existen en el mapping y las renombramos
@@ -2290,6 +2617,13 @@ def HU8_GenerarReportesCxP():
             try:
                 print(f"[OK] {archivos_procesados} archivos procesados")
                 
+                # 3. Cargar las otras tablas
+                query2 = "SELECT * FROM [NotificationsPaddy].[dbo].[CxP.Comparativa]"
+                df_detalles = pd.read_sql(query2, cx)
+
+                query3 = "SELECT * FROM [NotificationsPaddy].[CxP].[HistoricoOrdenesCompra]"
+                df_historico = pd.read_sql(query3, cx)
+                
                 with crear_conexion_db(cfg) as cx:
                     #CONSULTAS
                     # 2. Cargar Primera Tabla
@@ -2297,17 +2631,10 @@ def HU8_GenerarReportesCxP():
                     SELECT [executionDate], [Fecha_de_retoma_antes_de_contabilizacion], [executionNum], [ID], 
                         [documenttype], [numero_de_liquidacion_u_orden_de_compra], [nit_emisor_o_nit_del_proveedor],
                         [nombre_emisor], [numero_de_factura], [ResultadoFinalAntesEventos], 
-                        [Fecha_retoma_contabilizacion], [Estado_contabilizacion]
+                        [Fecha_retoma_contabilizacion], [Estado_contabilizacion], [FechaRetomaCompensacion_Fase7] ,[EstadoCompensacionFase_7]
                     FROM [NotificationsPaddy].[CxP].[DocumentsProcessing]
                     """
                     df_main = pd.read_sql(query1, cx)
-
-                    # 3. Cargar las otras tablas
-                    query2 = "SELECT * FROM [NotificationsPaddy].[dbo].[CxP.Comparativa]"
-                    df_detalles = pd.read_sql(query2, cx)
-
-                    query3 = "SELECT * FROM [NotificationsPaddy].[CxP].[HistoricoOrdenesCompra]"
-                    df_historico = pd.read_sql(query3, cx)
 
                     # 4. Generar reporte
                     generar_reporte_cxp(df_main, df_detalles, df_historico, rutas['resultados_dia'])

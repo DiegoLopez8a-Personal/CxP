@@ -1,3 +1,175 @@
+"""
+================================================================================
+SCRIPT: ZPRE_ValidarEmisor.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Valida el nombre del emisor para pedidos ZPRE/45 (Prepagos).
+    Compara el nombre del emisor en el XML de factura contra el nombre
+    del acreedor registrado en el historico de ordenes de compra de SAP.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |               ZPRE_ValidarEmisor()                          |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion desde vLocDicConfig                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar [CxP].[HU41_CandidatosValidacion]                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Filtrar registros:                                         |
+    |  - ClaseDePedido contiene ZPRE o 45                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro:                                        |
+    |  +-------------------------------------------------------+  |
+    |  |  Normalizar nombre_emisor_dp (XML)                    |  |
+    |  |  Normalizar Acreedor_hoc (SAP) - puede tener varios   |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Comparar nombre normalizado contra lista acreedores  |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI coincide con alguno:                              |  |
+    |  |    -> Aprobado                                        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI no coincide con ninguno:                          |  |
+    |  |    -> CON NOVEDAD                                     |  |
+    |  |    -> Actualizar DocumentsProcessing                  |  |
+    |  |    -> Actualizar Comparativa                          |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen: "OK. Total:X"
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+================================================================================
+NORMALIZACION DE NOMBRES
+================================================================================
+
+La funcion normalizar() aplica:
+    1. Conversion a mayusculas
+    2. Eliminacion de tildes/acentos (NFD + filtro Mn)
+    3. Eliminacion de caracteres no alfanumericos (excepto espacios)
+    4. Eliminacion de espacios extremos
+
+Ejemplo:
+    "Café & Más S.A.S." -> "CAFE MAS SAS"
+
+================================================================================
+CRITERIOS DE FILTRADO
+================================================================================
+
+El script procesa solo registros que cumplan:
+
+    ClaseDePedido contiene: ZPRE o 45
+
+================================================================================
+VALIDACION REALIZADA
+================================================================================
+
+    Nombre Emisor:
+        - nombre_emisor_dp (XML) normalizado
+        - Acreedor_hoc (SAP) - lista separada por |, cada uno normalizado
+        - Coincidencia exacta despues de normalizacion
+        
+    Si no coincide con ningun acreedor:
+        - Estado: CON NOVEDAD o CON NOVEDAD - CONTADO
+        - Observacion: "No coincide nombre del emisor"
+
+================================================================================
+TABLAS ACTUALIZADAS
+================================================================================
+
+    [CxP].[DocumentsProcessing]
+        - EstadoFinalFase_4 = 'VALIDACION DATOS DE FACTURACION: Exitoso'
+        - ObservacionesFase_4 = Observacion concatenada
+        - ResultadoFinalAntesEventos = Estado final
+
+    [dbo].[CxP.Comparativa]
+        - Valor_XML = Observacion (Item = 'Observaciones')
+        - Estado_validacion_antes_de_eventos = Estado final
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy"
+    }))
+    
+    # Ejecutar funcion
+    ZPRE_ValidarEmisor()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")  # "True"
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Normalizacion elimina diferencias por tildes, mayusculas, puntuacion
+    - Multiples acreedores en HOC se comparan individualmente
+    - Observaciones se truncan a 3900 caracteres
+    - Errores por registro no detienen el proceso
+
+================================================================================
+"""
+
 def ZPCN_ZPPA_ValidarEmisor():
     import json
     import ast

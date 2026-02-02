@@ -1,3 +1,228 @@
+
+"""
+================================================================================
+SCRIPT: buscarCandidatos.py
+================================================================================
+
+Descripcion General:
+--------------------
+    Identifica y prepara registros candidatos para validacion en el proceso
+    HU4.1 de Cuentas por Pagar. Cruza informacion entre DocumentsProcessing,
+    HistoricoOrdenesCompra y DetailsProcessing para encontrar coincidencias
+    validas y crear la tabla de candidatos para validacion.
+
+Autor: Diego Ivan Lopez Ochoa
+Version: 1.0.0
+Plataforma: RocketBot RPA
+
+================================================================================
+DIAGRAMA DE FLUJO
+================================================================================
+
+    +-------------------------------------------------------------+
+    |                        INICIO                               |
+    |                  buscarCandidatos()                         |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Obtener configuracion desde vLocDicConfig                  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Conectar a base de datos SQL Server                        |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Consultar tablas fuente:                                   |
+    |  - [CxP].[DocumentsProcessing] (df_dp)                      |
+    |  - [CxP].[HistoricoOrdenesCompra] (df_hoc)                  |
+    |  - [CxP].[DetailsProcessing] (df_ddp)                       |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Crear indices MultiIndex para busquedas rapidas:           |
+    |  - df_hoc: (NitCedula, NumOC)                               |
+    |  - df_ddp: (nit, numero_factura)                            |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Para cada registro en df_dp:                               |
+    |  +-------------------------------------------------------+  |
+    |  |  SI no tiene OC:                                      |  |
+    |  |    -> Marcar CON NOVEDAD "Sin orden de compra"        |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI no encuentra en HOC o DDP:                        |  |
+    |  |    -> Marcar EN ESPERA "No encontrado en historico"   |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI cant_hoc <= cant_ddp:                             |  |
+    |  |    -> Crear candidato directo                         |  |
+    |  +-------------------------------------------------------+  |
+    |  |  SI cant_hoc > cant_ddp:                              |  |
+    |  |    -> Buscar combinacion optima de posiciones         |  |
+    |  |    -> Si encuentra: crear candidato                   |  |
+    |  |    -> Si no: marcar EN ESPERA                         |  |
+    |  +-------------------------------------------------------+  |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Ejecutar batch updates en DocumentsProcessing y Comparativa|
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Crear/recrear tabla [CxP].[HU41_CandidatosValidacion]      |
+    |  Insertar candidatos validos                                |
+    +-----------------------------+-------------------------------+
+                                  |
+                                  v
+    +-------------------------------------------------------------+
+    |  Retornar estadisticas y configurar variables RocketBot     |
+    +-------------------------------------------------------------+
+
+================================================================================
+VARIABLES DE ENTRADA (RocketBot)
+================================================================================
+
+    vLocDicConfig : str | dict
+        Configuracion JSON con parametros:
+        - ServidorBaseDatos: Servidor SQL Server
+        - NombreBaseDatos: Nombre de la base de datos
+        - Tolerancia: Tolerancia para comparacion de valores (default: 500)
+
+    vGblStrUsuarioBaseDatos : str
+        Usuario para conexion SQL Server
+
+    vGblStrClaveBaseDatos : str
+        Contrasena para conexion SQL Server
+
+================================================================================
+VARIABLES DE SALIDA (RocketBot)
+================================================================================
+
+    vLocStrResultadoSP : str
+        "True" si exitoso, "False" si error
+
+    vLocStrResumenSP : str
+        Resumen del procesamiento con estadisticas
+
+    vLocDfCandidatosJson : str
+        DataFrame de candidatos en formato JSON
+
+    vLocDicEstadisticas : str
+        Diccionario de estadisticas en formato JSON
+
+    vGblStrDetalleError : str
+        Traceback en caso de error
+
+    vGblStrSystemError : str
+        Identificador del error del sistema
+
+================================================================================
+TABLAS UTILIZADAS
+================================================================================
+
+Tablas de Entrada:
+------------------
+    [CxP].[DocumentsProcessing]
+        Documentos de facturacion electronica pendientes de validacion.
+        Filtro: documenttype = 'FV' AND Fecha_de_retoma IS NOT NULL
+        
+    [CxP].[HistoricoOrdenesCompra]
+        Historico de ordenes de compra desde SAP.
+        Campos clave: NitCedula, NumOC, PorCalcular
+        
+    [CxP].[DetailsProcessing]
+        Detalles de lineas de factura XML.
+        Campos clave: nit, numero_factura, Valor de la Compra LEA
+
+Tablas de Salida:
+-----------------
+    [CxP].[HU41_CandidatosValidacion]
+        Tabla de candidatos para validacion.
+        Se recrea en cada ejecucion (DROP + CREATE).
+        Todas las columnas son NVARCHAR(MAX).
+
+    [dbo].[CxP.Comparativa]
+        Actualizacion de estados y observaciones.
+
+================================================================================
+ALGORITMO DE COMBINACION
+================================================================================
+
+Cuando hay mas posiciones en HOC que en DDP, se busca la combinacion
+optima de posiciones que sume el valor mas cercano al total de la factura:
+
+    1. Obtener suma total de "Valor de la Compra LEA" de DDP
+    2. Obtener lista de valores "PorCalcular" de HOC
+    3. Generar todas las combinaciones de N elementos (donde N = cant_ddp)
+    4. Buscar combinacion cuya suma este dentro de la tolerancia
+    5. Si encuentra: usar esas posiciones para el candidato
+    6. Si no encuentra: marcar como "Sin combinacion valida"
+
+================================================================================
+ESTADISTICAS RETORNADAS
+================================================================================
+
+    total              : Total de registros procesados
+    candidatos         : Registros que pasaron a tabla de candidatos
+    sin_oc             : Registros sin orden de compra
+    no_encontrados     : No encontrados en historico
+    sin_combinacion    : Sin combinacion valida de posiciones
+    errores            : Errores durante procesamiento
+    tiempo_total       : Tiempo total de ejecucion (segundos)
+    tiempo_procesamiento: Tiempo de procesamiento de registros
+    tiempo_updates     : Tiempo de actualizaciones en BD
+    tiempo_tabla       : Tiempo de creacion de tabla candidatos
+
+================================================================================
+EJEMPLOS DE USO
+================================================================================
+
+    # Configurar variables en RocketBot
+    SetVar("vLocDicConfig", json.dumps({
+        "ServidorBaseDatos": "servidor.ejemplo.com",
+        "NombreBaseDatos": "NotificationsPaddy",
+        "Tolerancia": 500
+    }))
+    SetVar("vGblStrUsuarioBaseDatos", "usuario")
+    SetVar("vGblStrClaveBaseDatos", "contrasena")
+    
+    # Ejecutar funcion
+    buscarCandidatos()
+    
+    # Verificar resultado
+    resultado = GetVar("vLocStrResultadoSP")
+    resumen = GetVar("vLocStrResumenSP")
+    # "Done. Total:150 Candidatos:120 SinOC:5 NoEnc:15 SinComb:10 Err:0 Time:45.2s"
+
+================================================================================
+MANEJO DE ERRORES
+================================================================================
+
+    - Errores de conexion: Reintenta hasta 3 veces con backoff exponencial
+    - Errores por registro: Continua con siguiente, incrementa contador errores
+    - Errores criticos: Rollback, configura variables de error, retorna False
+    - Observaciones se truncan a 3900 caracteres para evitar overflow
+
+================================================================================
+NOTAS TECNICAS
+================================================================================
+
+    - Usa context manager para conexion (garantiza cierre)
+    - Procesa en memoria con pandas para velocidad
+    - Batch updates para minimizar round-trips a BD
+    - Tabla candidatos se recrea (no append) para consistencia
+    - Todas las columnas NVARCHAR(MAX) para flexibilidad
+
+================================================================================
+"""
+
 def buscarCandidatos():
     import json
     import ast
