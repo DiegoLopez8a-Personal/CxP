@@ -13,9 +13,17 @@ Descripcion General:
     del plazo de dias maximos desde la fecha de retoma.
 
 Autor: Diego Ivan Lopez Ochoa
-Version: 1.0.0
+Version: 1.1.0 - Modificado para preservar datos en Comparativa
 Base de Datos: NotificationsPaddy
 Schema: CxP
+
+================================================================================
+CAMBIOS EN VERSION 1.1.0
+================================================================================
+- La tabla [dbo].[CxP.Comparativa] YA NO SE LIMPIA (no TRUNCATE/DELETE)
+- Se verifica si el ID_registro ya existe en Comparativa antes de insertar
+- Solo se insertan registros NUEVOS (que no existen en Comparativa)
+- Esto permite mantener el historial y evitar duplicados
 
 ================================================================================
 DIAGRAMA DE FLUJO
@@ -43,9 +51,9 @@ DIAGRAMA DE FLUJO
                                   |
                                   v
     +-------------------------------------------------------------+
-    |  Limpiar tablas de trabajo:                                 |
+    |  Limpiar tabla de trabajo:                                  |
     |  - TRUNCATE [CxP].[ReporteNovedades]                        |
-    |  - TRUNCATE [dbo].[CxP.Comparativa]                         |
+    |  - ** NO SE LIMPIA [dbo].[CxP.Comparativa] **               |
     +-----------------------------+-------------------------------+
                                   |
                                   v
@@ -64,7 +72,9 @@ DIAGRAMA DE FLUJO
     |  +-------------------------------------------------------+  |
     |  |  Actualizar fecha de retoma si es NULL                |  |
     |  +-------------------------------------------------------+  |
-    |  |  Insertar Items en [CxP.Comparativa]                  |  |
+    |  |  Verificar cuales NO existen en Comparativa           |  |
+    |  +-------------------------------------------------------+  |
+    |  |  Insertar Items SOLO para registros nuevos            |  |
     |  +-------------------------------------------------------+  |
     |  |  Validar campos obligatorios:                         |  |
     |  |  - Tipo Persona Emisor (13, 31)                       |  |
@@ -128,7 +138,8 @@ Tablas de Salida:
 -----------------
     [dbo].[CxP.Comparativa]
         Tabla comparativa con Items y valores XML.
-        Se trunca y regenera en cada ejecucion.
+        ** CAMBIO v1.1.0: YA NO se trunca, se preservan datos existentes **
+        Solo se insertan registros que NO existan previamente.
         
     [CxP].[ReporteNovedades]
         Reporte de novedades para seguimiento.
@@ -193,6 +204,7 @@ ResultSet 1: Resumen de Ejecucion
     MarcadosNoExitoso           INT             - Registros marcados NO EXITOSO
     MarcadosRechazado           INT             - Registros marcados RECHAZADO
     OKDentroDiasMaximos         INT             - Registros OK dentro del plazo
+    RegistrosNuevosComparativa  INT             - Registros NUEVOS en Comparativa
     FilasInsertadasComparativa  INT             - Filas insertadas en Comparativa
     RegistrosReporteNovedades   INT             - Registros en ReporteNovedades
 
@@ -244,7 +256,6 @@ Codigos de Error:
     50001 - @BatchSize invalido
     50002 - Tabla [CxP].[DocumentsProcessing] no existe
     50003 - Tabla [dbo].[CxP.Comparativa] no existe
-    50004 - Error limpiando [CxP.Comparativa]
     50010 - Error general en procesamiento
 
 ================================================================================
@@ -253,8 +264,9 @@ NOTAS TECNICAS
 
     - El SP usa SET NOCOUNT ON y SET XACT_ABORT ON
     - Procesa en lotes para evitar bloqueos prolongados
-    - Usa tablas temporales (#ProcessedIDs, #Eligible, #Batch)
-    - La tabla Comparativa se trunca al inicio (proceso destructivo)
+    - Usa tablas temporales (#ProcessedIDs, #Eligible, #Batch, #NewRecords)
+    - ** CAMBIO v1.1.0: La tabla Comparativa NO se limpia (proceso NO destructivo) **
+    - Solo se insertan registros que NO existan en Comparativa
     - Las observaciones se concatenan (no se sobrescriben)
     - Limite de 3900 caracteres en ObservacionesFase_4
 
@@ -331,6 +343,27 @@ BEGIN
         DELETE FROM [CxP].[ReporteNovedades];
     END CATCH
 
+    -- =========================================================================
+    -- CAMBIO v1.1.0: YA NO SE LIMPIA LA TABLA COMPARATIVA
+    -- Se preservan los datos existentes y solo se insertan registros nuevos
+    -- =========================================================================
+    -- BEGIN TRY
+    --     TRUNCATE TABLE [dbo].[CxP.Comparativa];
+    -- END TRY
+    -- BEGIN CATCH
+    --     BEGIN TRY
+    --         DELETE FROM [dbo].[CxP.Comparativa];
+    --     END TRY
+    --     BEGIN CATCH
+    --         DECLARE @m1 NVARCHAR(4000) = CONCAT(
+    --             'Error limpiando [dbo].[CxP.Comparativa]. Error ', ERROR_NUMBER(),
+    --             ', Linea ', ERROR_LINE(), ': ', ERROR_MESSAGE()
+    --         );
+    --         THROW 50004, @m1, 1;
+    --     END CATCH
+    -- END CATCH;
+    -- =========================================================================
+
     DECLARE @HasCalculationRate BIT =
         CASE WHEN COL_LENGTH(N'CxP.DocumentsProcessing', N'CalculationRate') IS NOT NULL THEN 1 ELSE 0 END;
 
@@ -349,22 +382,6 @@ BEGIN
         (N'CON NOVEDAD - RETORNADO'),
         (N'EN ESPERA DE POSICIONES'),
         (N'NO EXITOSO');
-
-    BEGIN TRY
-        TRUNCATE TABLE [dbo].[CxP.Comparativa];
-    END TRY
-    BEGIN CATCH
-        BEGIN TRY
-            DELETE FROM [dbo].[CxP.Comparativa];
-        END TRY
-        BEGIN CATCH
-            DECLARE @m1 NVARCHAR(4000) = CONCAT(
-                'Error limpiando [dbo].[CxP.Comparativa]. Error ', ERROR_NUMBER(),
-                ', Linea ', ERROR_LINE(), ': ', ERROR_MESSAGE()
-            );
-            THROW 50004, @m1, 1;
-        END CATCH
-    END CATCH;
 
     DECLARE @Items TABLE (
         SortOrder INT NOT NULL PRIMARY KEY,
@@ -454,6 +471,7 @@ BEGIN
         @TotalMarcadosNoExitoso              INT = 0,
         @TotalMarcadosRechazado              INT = 0,
         @TotalOKDentroDiasMaximos            INT = 0,
+        @TotalRegistrosNuevosComparativa     INT = 0,
         @TotalFilasInsertadasComparativa     INT = 0,
         @TotalRegistrosReporteNovedades      INT = 0;
 
@@ -500,131 +518,157 @@ BEGIN
 
             SET @TotalRetomaSetDesdeNull += @@ROWCOUNT;
 
-            INSERT INTO [dbo].[CxP.Comparativa] WITH (TABLOCK)
-            (
-                [Fecha_de_ejecucion],
-                [Fecha_de_retoma_antes_de_contabilizacion],
-                [ID_ejecucion],
-                [ID_registro],
-                [Tipo_de_documento],
-                [Orden_de_Compra],
-                [Clase_de_pedido],
-                [NIT],
-                [Nombre_Proveedor],
-                [Factura],
-                [Item],
-                [Valor_XML],
-                [Valor_Orden_de_Compra],
-                [Valor_Orden_de_Compra_Comercializados],
-                [Aprobado],
-                [Estado_validacion_antes_de_eventos],
-                [Fecha_de_retoma_contabilizacion],
-                [Estado_contabilizacion],
-                [Fecha_de_retoma_compensacion],
-                [Estado_compensacion]
-            )
-            SELECT
-                @ExecutionDateTime,
-                dp.Fecha_de_retoma_antes_de_contabilizacion,
-                NULL,
-                dp.ID,
-                dp.documenttype,
-                dp.numero_de_liquidacion_u_orden_de_compra,
-                NULL,
-                dp.nit_emisor_o_nit_del_proveedor,
-                dp.nombre_emisor,
-                dp.numero_de_factura,
-                it.Item,
-                CASE it.Item
-                    WHEN N'AttachedDocument'               THEN TRY_CONVERT(NVARCHAR(4000), dp.attached_document)
-                    WHEN N'UBLVersion'                     THEN TRY_CONVERT(NVARCHAR(4000), dp.ubl_version)
-                    WHEN N'ProfileExecutionID'             THEN TRY_CONVERT(NVARCHAR(4000), dp.ambiente_de_ejecucion_id)
-                    WHEN N'ParentDocumentID'               THEN NULL
-                    WHEN N'NombreEmisor'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.nombre_emisor)
-                    WHEN N'NITEmisor'                      THEN TRY_CONVERT(NVARCHAR(4000), dp.nit_emisor_o_nit_del_proveedor)
-                    WHEN N'TipoPersonaEmisor'              THEN TRY_CONVERT(NVARCHAR(4000), dp.Tipo_Persona_Emisor)
-                    WHEN N'DigitoVerificacionEmisor'       THEN TRY_CONVERT(NVARCHAR(4000), dp.Digito_de_verificacion_Emisor)
-                    WHEN N'TaxLevelCodeEmisor'             THEN TRY_CONVERT(NVARCHAR(4000), dp.responsabilidad_tributaria_emisor)
-                    WHEN N'NombreReceptor'                 THEN TRY_CONVERT(NVARCHAR(4000), dp.nombre_del_adquiriente)
-                    WHEN N'NitReceptor'                    THEN TRY_CONVERT(NVARCHAR(4000), dp.nit_del_adquiriente)
-                    WHEN N'TipoPersonaReceptor'            THEN TRY_CONVERT(NVARCHAR(4000), dp.tipo_persona)
-                    WHEN N'DigitoVerificacionReceptor'     THEN TRY_CONVERT(NVARCHAR(4000), dp.digito_de_verificacion)
-                    WHEN N'TaxLevelCodeReceptor'           THEN TRY_CONVERT(NVARCHAR(4000), dp.responsabilidad_tributaria_adquiriente)
-                    WHEN N'FechaEmisionDocumento'          THEN CASE WHEN dp.fecha_de_emision_documento IS NULL THEN NULL
-                                                                     ELSE CONVERT(NVARCHAR(33), dp.fecha_de_emision_documento, 126) END
-                    WHEN N'ValidationResultCode'           THEN TRY_CONVERT(NVARCHAR(4000), dp.validationresultcode)
-                    WHEN N'InvoiceTypecode'                THEN TRY_CONVERT(NVARCHAR(4000), dp.codigo_tipo_de_documento)
-                    WHEN N'ResponseCode'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.codigo_de_uso_autorizado_por_la_dian)
-                    WHEN N'DescripcionCodigo'              THEN TRY_CONVERT(NVARCHAR(4000), dp.descripcion_del_codigo)
-                    WHEN N'LineExtensionAmount'            THEN TRY_CONVERT(NVARCHAR(4000), dp.valor_a_pagar)
-                    WHEN N'CufeUUID'                       THEN TRY_CONVERT(NVARCHAR(4000), dp.cufeuuid)
-                    WHEN N'DocumentType'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.documenttype)
-                    WHEN N'NumeroLineas'                   THEN NULL
-                    WHEN N'MetodoPago'                     THEN TRY_CONVERT(NVARCHAR(4000), dp.medio_de_pago)
-                    WHEN N'ValidationDate'                 THEN CASE WHEN dp.fechaValidacion IS NULL THEN NULL
-                                                                     ELSE CONVERT(NVARCHAR(33), dp.fechaValidacion, 126) END
-                    WHEN N'PaymentDueDate'                 THEN CASE WHEN dp.fecha_de_validacion_forma_de_pago IS NULL THEN NULL
-                                                                     ELSE CONVERT(NVARCHAR(33), dp.fecha_de_validacion_forma_de_pago, 126) END
-                    WHEN N'CondicionPago'                  THEN TRY_CONVERT(NVARCHAR(4000), dp.forma_de_pago)
-                    WHEN N'CalculationRate'                THEN NULL
-                    WHEN N'ActualizacionNombreArchivos'    THEN TRY_CONVERT(NVARCHAR(4000), dp.actualizacionNombreArchivos)
-                    WHEN N'RutaRespaldo'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.RutaArchivo)
-                    WHEN N'InsumoXML'                      THEN NULL
-                    WHEN N'InsumoPDF'                      THEN NULL
-                    WHEN N'Observaciones'                  THEN NULL
-                    ELSE NULL
-                END,
-                CASE it.Item
-                    WHEN N'AttachedDocument'           THEN N'AttachedDocument'
-                    WHEN N'UBLVersion'                 THEN N'UBL 2.1'
-                    WHEN N'ProfileExecutionID'         THEN N'1'
-                    WHEN N'NitReceptor'                THEN N'860031606'
-                    WHEN N'TipoPersonaReceptor'        THEN N'31'
-                    WHEN N'DigitoVerificacionReceptor' THEN N'6'
-                    ELSE NULL
-                END,
-                NULL,
-                CASE
-                    WHEN dp.Fecha_de_retoma_antes_de_contabilizacion < @Cutoff THEN NULL
-                    ELSE
-                        CASE it.Item
-                            WHEN N'UBLVersion'                 THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.ubl_version)), N'') IN (N'UBL 2.1', N'DIAN 2.1') THEN N'SI' ELSE N'NO' END
-                            WHEN N'ProfileExecutionID'         THEN CASE WHEN dp.ambiente_de_ejecucion_id = 1 THEN N'SI' ELSE N'NO' END
-                            WHEN N'ParentDocumentID'           THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.numero_de_factura)), N'') IS NOT NULL THEN N'SI' ELSE N'NO' END
-                            WHEN N'NombreEmisor'               THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.nombre_emisor)), N'') IS NOT NULL THEN N'SI' ELSE N'NO' END
-                            WHEN N'NITEmisor'                  THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.nit_emisor_o_nit_del_proveedor)), N'') IS NOT NULL THEN N'SI' ELSE N'NO' END
-                            WHEN N'TipoPersonaEmisor'          THEN CASE WHEN dp.Tipo_Persona_Emisor IN (13, 31) THEN N'SI' ELSE N'NO' END
-                            WHEN N'DigitoVerificacionEmisor'   THEN CASE WHEN dp.Digito_de_verificacion_Emisor IS NOT NULL THEN N'SI' ELSE N'NO' END
-                            WHEN N'TipoPersonaReceptor'        THEN CASE WHEN dp.tipo_persona IN (13,31) THEN N'SI' ELSE N'NO' END
-                            WHEN N'DigitoVerificacionReceptor' THEN CASE WHEN dp.digito_de_verificacion = 6 THEN N'SI' ELSE N'NO' END
-                            WHEN N'NitReceptor'                THEN CASE WHEN dp.nit_del_adquiriente = 860031606 THEN N'SI' ELSE N'NO' END
-                            WHEN N'FechaEmisionDocumento'      THEN CASE WHEN dp.fecha_de_emision_documento IS NOT NULL THEN N'SI' ELSE N'NO' END
-                            ELSE NULL
-                        END
-                END,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL
-            FROM [CxP].[DocumentsProcessing] dp
-            INNER JOIN #Batch b ON b.ID = dp.ID
-            CROSS JOIN @Items it;
+            -- =====================================================================
+            -- CAMBIO v1.1.0: Verificar cuales registros NO existen en Comparativa
+            -- =====================================================================
+            IF OBJECT_ID('tempdb..#NewRecords') IS NOT NULL DROP TABLE #NewRecords;
+            CREATE TABLE #NewRecords (ID BIGINT NOT NULL PRIMARY KEY);
 
-            SET @TotalFilasInsertadasComparativa += @@ROWCOUNT;
+            -- Insertar solo los IDs que NO tienen registros en Comparativa
+            INSERT INTO #NewRecords (ID)
+            SELECT b.ID
+            FROM #Batch b
+            WHERE NOT EXISTS (
+                SELECT 1 
+                FROM [dbo].[CxP.Comparativa] c 
+                WHERE c.ID_registro = b.ID
+            );
 
-            IF @HasCalculationRate = 1
+            DECLARE @CountNewRecords INT = @@ROWCOUNT;
+            SET @TotalRegistrosNuevosComparativa += @CountNewRecords;
+
+            -- Solo insertar si hay registros nuevos
+            IF @CountNewRecords > 0
             BEGIN
-                DECLARE @sqlCalc NVARCHAR(MAX) = N'
-                    UPDATE c
-                       SET c.Valor_XML = TRY_CONVERT(NVARCHAR(4000), dp.CalculationRate)
-                    FROM [dbo].[CxP.Comparativa] c
-                    INNER JOIN #Batch b ON b.ID = c.ID_registro
-                    INNER JOIN [CxP].[DocumentsProcessing] dp ON dp.ID = b.ID
-                    WHERE c.Item = N''CalculationRate'';
-                ';
-                EXEC sys.sp_executesql @sqlCalc;
+                INSERT INTO [dbo].[CxP.Comparativa] WITH (TABLOCK)
+                (
+                    [Fecha_de_ejecucion],
+                    [Fecha_de_retoma_antes_de_contabilizacion],
+                    [ID_ejecucion],
+                    [ID_registro],
+                    [Tipo_de_documento],
+                    [Orden_de_Compra],
+                    [Clase_de_pedido],
+                    [NIT],
+                    [Nombre_Proveedor],
+                    [Factura],
+                    [Item],
+                    [Valor_XML],
+                    [Valor_Orden_de_Compra],
+                    [Valor_Orden_de_Compra_Comercializados],
+                    [Aprobado],
+                    [Estado_validacion_antes_de_eventos],
+                    [Fecha_de_retoma_contabilizacion],
+                    [Estado_contabilizacion],
+                    [Fecha_de_retoma_compensacion],
+                    [Estado_compensacion]
+                )
+                SELECT
+                    @ExecutionDateTime,
+                    dp.Fecha_de_retoma_antes_de_contabilizacion,
+                    NULL,
+                    dp.ID,
+                    dp.documenttype,
+                    dp.numero_de_liquidacion_u_orden_de_compra,
+                    NULL,
+                    dp.nit_emisor_o_nit_del_proveedor,
+                    dp.nombre_emisor,
+                    dp.numero_de_factura,
+                    it.Item,
+                    CASE it.Item
+                        WHEN N'AttachedDocument'               THEN TRY_CONVERT(NVARCHAR(4000), dp.attached_document)
+                        WHEN N'UBLVersion'                     THEN TRY_CONVERT(NVARCHAR(4000), dp.ubl_version)
+                        WHEN N'ProfileExecutionID'             THEN TRY_CONVERT(NVARCHAR(4000), dp.ambiente_de_ejecucion_id)
+                        WHEN N'ParentDocumentID'               THEN NULL
+                        WHEN N'NombreEmisor'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.nombre_emisor)
+                        WHEN N'NITEmisor'                      THEN TRY_CONVERT(NVARCHAR(4000), dp.nit_emisor_o_nit_del_proveedor)
+                        WHEN N'TipoPersonaEmisor'              THEN TRY_CONVERT(NVARCHAR(4000), dp.Tipo_Persona_Emisor)
+                        WHEN N'DigitoVerificacionEmisor'       THEN TRY_CONVERT(NVARCHAR(4000), dp.Digito_de_verificacion_Emisor)
+                        WHEN N'TaxLevelCodeEmisor'             THEN TRY_CONVERT(NVARCHAR(4000), dp.responsabilidad_tributaria_emisor)
+                        WHEN N'NombreReceptor'                 THEN TRY_CONVERT(NVARCHAR(4000), dp.nombre_del_adquiriente)
+                        WHEN N'NitReceptor'                    THEN TRY_CONVERT(NVARCHAR(4000), dp.nit_del_adquiriente)
+                        WHEN N'TipoPersonaReceptor'            THEN TRY_CONVERT(NVARCHAR(4000), dp.tipo_persona)
+                        WHEN N'DigitoVerificacionReceptor'     THEN TRY_CONVERT(NVARCHAR(4000), dp.digito_de_verificacion)
+                        WHEN N'TaxLevelCodeReceptor'           THEN TRY_CONVERT(NVARCHAR(4000), dp.responsabilidad_tributaria_adquiriente)
+                        WHEN N'FechaEmisionDocumento'          THEN CASE WHEN dp.fecha_de_emision_documento IS NULL THEN NULL
+                                                                         ELSE CONVERT(NVARCHAR(33), dp.fecha_de_emision_documento, 126) END
+                        WHEN N'ValidationResultCode'           THEN TRY_CONVERT(NVARCHAR(4000), dp.validationresultcode)
+                        WHEN N'InvoiceTypecode'                THEN TRY_CONVERT(NVARCHAR(4000), dp.codigo_tipo_de_documento)
+                        WHEN N'ResponseCode'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.codigo_de_uso_autorizado_por_la_dian)
+                        WHEN N'DescripcionCodigo'              THEN TRY_CONVERT(NVARCHAR(4000), dp.descripcion_del_codigo)
+                        WHEN N'LineExtensionAmount'            THEN TRY_CONVERT(NVARCHAR(4000), dp.valor_a_pagar)
+                        WHEN N'CufeUUID'                       THEN TRY_CONVERT(NVARCHAR(4000), dp.cufeuuid)
+                        WHEN N'DocumentType'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.documenttype)
+                        WHEN N'NumeroLineas'                   THEN NULL
+                        WHEN N'MetodoPago'                     THEN TRY_CONVERT(NVARCHAR(4000), dp.medio_de_pago)
+                        WHEN N'ValidationDate'                 THEN CASE WHEN dp.fechaValidacion IS NULL THEN NULL
+                                                                         ELSE CONVERT(NVARCHAR(33), dp.fechaValidacion, 126) END
+                        WHEN N'PaymentDueDate'                 THEN CASE WHEN dp.fecha_de_validacion_forma_de_pago IS NULL THEN NULL
+                                                                         ELSE CONVERT(NVARCHAR(33), dp.fecha_de_validacion_forma_de_pago, 126) END
+                        WHEN N'CondicionPago'                  THEN TRY_CONVERT(NVARCHAR(4000), dp.forma_de_pago)
+                        WHEN N'CalculationRate'                THEN NULL
+                        WHEN N'ActualizacionNombreArchivos'    THEN TRY_CONVERT(NVARCHAR(4000), dp.actualizacionNombreArchivos)
+                        WHEN N'RutaRespaldo'                   THEN TRY_CONVERT(NVARCHAR(4000), dp.RutaArchivo)
+                        WHEN N'InsumoXML'                      THEN NULL
+                        WHEN N'InsumoPDF'                      THEN NULL
+                        WHEN N'Observaciones'                  THEN NULL
+                        ELSE NULL
+                    END,
+                    CASE it.Item
+                        WHEN N'AttachedDocument'           THEN N'AttachedDocument'
+                        WHEN N'UBLVersion'                 THEN N'UBL 2.1'
+                        WHEN N'ProfileExecutionID'         THEN N'1'
+                        WHEN N'NitReceptor'                THEN N'860031606'
+                        WHEN N'TipoPersonaReceptor'        THEN N'31'
+                        WHEN N'DigitoVerificacionReceptor' THEN N'6'
+                        ELSE NULL
+                    END,
+                    NULL,
+                    CASE
+                        WHEN dp.Fecha_de_retoma_antes_de_contabilizacion < @Cutoff THEN NULL
+                        ELSE
+                            CASE it.Item
+                                WHEN N'UBLVersion'                 THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.ubl_version)), N'') IN (N'UBL 2.1', N'DIAN 2.1') THEN N'SI' ELSE N'NO' END
+                                WHEN N'ProfileExecutionID'         THEN CASE WHEN dp.ambiente_de_ejecucion_id = 1 THEN N'SI' ELSE N'NO' END
+                                WHEN N'ParentDocumentID'           THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.numero_de_factura)), N'') IS NOT NULL THEN N'SI' ELSE N'NO' END
+                                WHEN N'NombreEmisor'               THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.nombre_emisor)), N'') IS NOT NULL THEN N'SI' ELSE N'NO' END
+                                WHEN N'NITEmisor'                  THEN CASE WHEN NULLIF(LTRIM(RTRIM(dp.nit_emisor_o_nit_del_proveedor)), N'') IS NOT NULL THEN N'SI' ELSE N'NO' END
+                                WHEN N'TipoPersonaEmisor'          THEN CASE WHEN dp.Tipo_Persona_Emisor IN (13, 31) THEN N'SI' ELSE N'NO' END
+                                WHEN N'DigitoVerificacionEmisor'   THEN CASE WHEN dp.Digito_de_verificacion_Emisor IS NOT NULL THEN N'SI' ELSE N'NO' END
+                                WHEN N'TipoPersonaReceptor'        THEN CASE WHEN dp.tipo_persona IN (13,31) THEN N'SI' ELSE N'NO' END
+                                WHEN N'DigitoVerificacionReceptor' THEN CASE WHEN dp.digito_de_verificacion = 6 THEN N'SI' ELSE N'NO' END
+                                WHEN N'NitReceptor'                THEN CASE WHEN dp.nit_del_adquiriente = 860031606 THEN N'SI' ELSE N'NO' END
+                                WHEN N'FechaEmisionDocumento'      THEN CASE WHEN dp.fecha_de_emision_documento IS NOT NULL THEN N'SI' ELSE N'NO' END
+                                ELSE NULL
+                            END
+                    END,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL,
+                    NULL
+                FROM [CxP].[DocumentsProcessing] dp
+                INNER JOIN #NewRecords nr ON nr.ID = dp.ID
+                CROSS JOIN @Items it;
+
+                SET @TotalFilasInsertadasComparativa += @@ROWCOUNT;
+
+                IF @HasCalculationRate = 1
+                BEGIN
+                    DECLARE @sqlCalc NVARCHAR(MAX) = N'
+                        UPDATE c
+                           SET c.Valor_XML = TRY_CONVERT(NVARCHAR(4000), dp.CalculationRate)
+                        FROM [dbo].[CxP.Comparativa] c
+                        INNER JOIN #NewRecords nr ON nr.ID = c.ID_registro
+                        INNER JOIN [CxP].[DocumentsProcessing] dp ON dp.ID = nr.ID
+                        WHERE c.Item = N''CalculationRate'';
+                    ';
+                    EXEC sys.sp_executesql @sqlCalc;
+                END
             END
+            -- =====================================================================
+            -- FIN DE CAMBIOS v1.1.0
+            -- =====================================================================
 
             IF OBJECT_ID('tempdb..#Expired') IS NOT NULL DROP TABLE #Expired;
             CREATE TABLE #Expired (ID BIGINT NOT NULL PRIMARY KEY);
@@ -926,6 +970,9 @@ BEGIN
     
     SET @TotalRegistrosReporteNovedades = @@ROWCOUNT;
 
+    -- =========================================================================
+    -- ResultSet 1: Resumen - ACTUALIZADO para incluir RegistrosNuevosComparativa
+    -- =========================================================================
     SELECT
         @ExecutionDateTime                  AS FechaEjecucion,
         @DiasMaximos                        AS DiasMaximos,
@@ -935,6 +982,7 @@ BEGIN
         @TotalMarcadosNoExitoso             AS MarcadosNoExitoso,
         @TotalMarcadosRechazado             AS MarcadosRechazado,
         @TotalOKDentroDiasMaximos           AS OKDentroDiasMaximos,
+        @TotalRegistrosNuevosComparativa    AS RegistrosNuevosComparativa,
         @TotalFilasInsertadasComparativa    AS FilasInsertadasComparativa,
         @TotalRegistrosReporteNovedades     AS RegistrosReporteNovedades;
 
