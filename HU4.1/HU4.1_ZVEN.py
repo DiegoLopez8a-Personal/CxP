@@ -63,7 +63,7 @@ DIAGRAMA DE FLUJO
     |  |  e. Validar Nombre Emisor                             |  |
     |  |     SI no coincide -> CON NOVEDAD                     |  |
     |  +-------------------------------------------------------+  |
-    |  |  SI todas pasan -> PROCESADO                          |  |
+    |  |  SI todas pasan -> APROBADO                           |  |
     |  +-------------------------------------------------------+  |
     +-----------------------------+-------------------------------+
                                   |
@@ -1527,8 +1527,8 @@ def ZVEN_ValidarComercializados():
         with crear_conexion_db(cfg) as cx:
             # Consultar registros candidatos ZVEN/50
             df_registros = pd.read_sql(
-                "SELECT * FROM [CxP].[HU41_CandidatosValidacion] "
-                "WHERE [ClaseDePedido_hoc] IN ('ZVEN', '50')", 
+                """SELECT * FROM [CxP].[HU41_CandidatosValidacion] 
+                    WHERE CAST([ClaseDePedido_hoc] AS NVARCHAR(MAX)) LIKE '%ZVEN%'""", 
                 cx
             )
             print(f"[INFO] {len(df_registros)} registros ZVEN/50 para procesar.")
@@ -1942,7 +1942,7 @@ def ZVEN_ValidarComercializados():
                     # FIN EXITOSO DEL REGISTRO
                     # ---------------------------------------------------------
                     print(f"[SUCCESS] Registro {registro_id} finalizado OK")
-                    res_final = f"PROCESADO {sufijo_contado}"
+                    res_final = f"APROBADO {sufijo_contado}"
                     actualizar_bd_cxp(cx, registro_id, {
                         'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso', 
                         'ResultadoFinalAntesEventos': res_final

@@ -1597,7 +1597,7 @@ def ZPAF_ValidarActivosFijos():
             
             query_zpaf = """
                 SELECT * FROM [CxP].[HU41_CandidatosValidacion]
-                WHERE [ClaseDePedido_hoc] IN ('ZPAF', '41')
+                WHERE CAST([ClaseDePedido_hoc] AS NVARCHAR(MAX)) LIKE '%ZPAF%'
             """
             
             df_registros = pd.read_sql(query_zpaf, cx)
@@ -1901,10 +1901,10 @@ def ZPAF_ValidarActivosFijos():
                     else:
                         campos_exitoso = {
                             'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso',
-                            'ResultadoFinalAntesEventos': f"PROCESADO {sufijo_contado}"
+                            'ResultadoFinalAntesEventos': f"APROBADO {sufijo_contado}"
                         }
                         actualizar_bd_cxp(cx, registro_id, campos_exitoso)
-                        actualizar_estado_comparativa(cx, nit, numero_factura, f"PROCESADO {sufijo_contado}")
+                        actualizar_estado_comparativa(cx, nit, numero_factura, f"APROBADO {sufijo_contado}")
                         print(f"[SUCCESS] Registro {registro_id} procesado exitosamente")
                         registros_exitosos += 1
                     

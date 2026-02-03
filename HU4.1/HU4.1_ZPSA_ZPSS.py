@@ -1316,10 +1316,8 @@ def ZPSA_ZPSS_ValidarServicios():
         with crear_conexion_db(cfg) as cx:
             print("[INFO] Obteniendo registros ZPSA/ZPSS/43 para procesar...")
             
-            query_zpsa = """
-                SELECT * FROM [CxP].[HU41_CandidatosValidacion]
-                WHERE [ClaseDePedido_hoc] IN ('ZPSA', 'ZPSS', '43')
-            """
+            query_zpsa = """SELECT * FROM [CxP].[HU41_CandidatosValidacion] 
+                    WHERE CAST([ClaseDePedido_hoc] AS NVARCHAR(MAX)) LIKE '%ZPSA%' OR CAST([ClaseDePedido_hoc] AS NVARCHAR(MAX)) LIKE '%ZPSS%'"""
             
             df_registros = pd.read_sql(query_zpsa, cx)
             
@@ -1991,7 +1989,7 @@ def ZPSA_ZPSS_ValidarServicios():
                 # 12. FINALIZAR REGISTRO EXITOSO
                 if not hay_novedad:
                     marcar_orden_procesada(cx, numero_oc, safe_str(registro.get('Posicion_hoc','')))
-                    campos_exitoso = {'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso','ResultadoFinalAntesEventos': f"PROCESADO {sufijo_contado}"}
+                    campos_exitoso = {'EstadoFinalFase_4': 'VALIDACION DATOS DE FACTURACION: Exitoso','ResultadoFinalAntesEventos': f"APROBADO {sufijo_contado}"}
                     actualizar_bd_cxp(cx, registro_id, campos_exitoso)
                     print(f"[SUCCESS] Registro {registro_id} procesado exitosamente")
                     registros_exitosos += 1
